@@ -640,19 +640,9 @@ RC	equ	$-4
 	 dos	3fh
 	 mov	si, InvalidImageFileMsg
 	 if nc AND {ax ,e, cx}
-	  ; see if we have the ISO or HS signatures
-	  ifw {[buf+1] ,e, 'CD'} AND {word [buf+3] ,e, '00'} ; assume '1'
-	   ; found ISO, position the volume offset
-	   mov	di, buf+80
-	  elifw {[buf+9] ,e, 'CD'} AND {word [buf+11] ,e, 'RO'} ; assume 'M'
-	   ; found HS, position the volume offset
-	   mov	di, buf+88
-	  fi
-	 andif e
 	  mov	si, [DOffset]
 	  mov	[si+DriveEntry.Handle], bx
-	  mmovd si+DriveEntry.VolSize, di
-	  call	vol2addr
+	  zerod [si+DriveEntry.VolSize]
 	  addw	[DOffset], DriveEntry_size
 	  incb	[Units]
 	  incb	[iUnits]

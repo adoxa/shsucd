@@ -8,7 +8,7 @@
 ; v3.01, March, 2005.
 ; v3.02, April/May, 2005.
 ; v3.03, December, 2005.
-; v3.04, October, 2006.
+; v3.10, January/February, 2005.
 ;
 ;*** Begin original comments (abridged):
 ;***************************************************************************
@@ -72,6 +72,8 @@
 ; The resident size is now less than 6K for one drive.
 ; Acknowledgement to Ralf Brown's Interrupt List.
 ;
+; v3.10 adds UDF support (non-compliant, read-only).
+;
 ;****************************************************************************
 ;
 
@@ -81,10 +83,14 @@
 %define HS		; If defined include High Sierra support.
 %define JOLIET		; If defined use Joliet (required by DOSLFN 0.40a).
 %define CDIMAGE 	; If defined enables using an image on a CD.
+%define UDF		; If defined enables reading UDF discs.
 
 %include "nasm.mac"
 %include "undoc.mac"
 %include "cdrom.mac"
+%ifdef UDF
+%include "udf.mac"
+%endif
 
 %ifdef i8086
 		cpu	8086
@@ -152,6 +158,9 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 %ifdef CDIMAGE
   %assign COMPILE_FLAG COMPILE_FLAG | bit(4)
 %endif
+%ifdef UDF
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(5)
+%endif
 
 
 %define MAXDRIVES	10
@@ -168,13 +177,16 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.04 (1 October, 2006).  Freeware.   | John H. McCoy, October 2000,"
+dln "Version 3.10 (11 February, 2006).  Freeware. | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
 		db	26
 
 CritInit:
-	; zero out the sector buffers (security and directory scan sentinel)
+	; zero out the sector buffers
 	mov	di, [Drive+DrvEnt.Bufp]
+%ifdef UDF
+	sub	di, SECTORSIZE
+%endif
 	mov	al, 0
 	mov	cx, i(IODatap)
 IODatap iw
@@ -261,6 +273,15 @@ dir_name	times 11 db 0	; FCB name from directory  / consecutively
 %ifdef JOLIET
 Joliet		dflg	off
 %endif
+%ifdef UDF
+Udf		dflg	off
+uni2asc 	dw	0
+invchr		db	'\/:*?"<>|;^,&+=[]'
+badchr		dflg	off
+suffix		dflg	off
+icbloc		dd	0
+Matchfunc	dw	0
+%endif
 
 
 ; Use BP to access variables, since it's shorter than direct memory access
@@ -317,7 +338,7 @@ CD_Table	dw	CD_Number	; 00 Get number of CD-ROM drives
 %ifdef JOLIET
 		dw	CD_VolDesc	; 0E Get/Set vol. descriptor preference
 %else
-		dw	CD_unsupported	; 0E Get/Set vol. descriptor preference
+		dw	CD_Unsupported	; 0E Get/Set vol. descriptor preference
 %endif
 		dw	CD_DirEntry	; 0F Get directory entry
 		dw	CD_Request	; 10 Send device request
@@ -666,11 +687,22 @@ ForUs	uses	bx,si,di
 	; May need to initialize this drive
 	ifb [bx+DrvEnt.Type] ,e, UNKNOWN
 	 orw	[bx+DrvEnt.BufBlkNo+2], -1
+%ifdef UDF
+	 orw	[bx+DrvEnt.BufBakNo+2], -1
+	 call	CheckUDF
+	 jz	.init
+%endif
 	 call	CdReadPVD
 	 mov	al, DRIVENOTREADY
 	 retif	nz
-	 call	InitCD
+.init:	 call	InitCD
 	fi
+
+%ifdef UDF
+	cmpb	[bx+DrvEnt.Type], OSTAUDF+1
+	salc
+	mov	[Udf], al
+%endif
 
 	call	GetTicks
 	mov	[bx+DrvEnt.LastAccess], ax
@@ -704,6 +736,103 @@ GetTicks
 	return
 
 
+%ifdef UDF
+;+
+; FUNCTION : CheckUDF
+;
+;	Determine if the disc is using UDF.
+;
+; Parameters:
+;	BX -> drive structure
+;
+; Returns:
+;	ZR if using UDF
+;	   PartLoc set to partition sector, RootEnt.FSize set to volume size
+;	   sector buffer contains the File Set Descriptor
+;	NZ if not using UDF
+;
+; Destroys:
+;	EAX,DI
+;-
+CheckUDF
+	; Read the Anchor Volume Descriptor Pointer at sector 256
+%ifdef i8086
+	mov	ax, 256
+	cwd
+%else
+	zero	eax
+	mov	ah, 1
+%endif
+	call	CdReadBlk
+	retif	nz
+
+	mov	di, [bx+DrvEnt.Bufp]
+	retifw	[di] ,ne, AnchorVolumeID	; tag.Identifier
+%ifdef i8086
+	retif	{[di+tag.Location+2] ,ne, dx} AND {[di+tag.Location] ,ne, ax}
+%else
+	retif	[di+tag.Location] ,ne, eax
+%endif
+
+	ldd	di+AnchorVolumeDescriptorPointer.MainVDSExtent+extent_ad.Location
+	call	CdReadBlk
+	retif	nz
+	mov	di, [bx+DrvEnt.Bufp]
+%ifdef i8086
+	retif	{[di+tag.Location+2] ,ne, dx} AND {[di+tag.Location] ,ne, ax}
+%else
+	retif	[di+tag.Location] ,ne, eax
+%endif
+
+	; Okay, now that two tags have been "verified", let's say it's
+	; safe to assume UDF has been found.
+	movb	[bx+DrvEnt.Type], OSTAUDF
+	sflg	[BP_(Udf)]
+
+	; Locate the Partition and Logical Volume Descriptors
+	; Assume only one of each and the LVD is after the PD
+	repeat
+	 ifw [di] ,e, PartitionID
+%ifdef i8086
+	  save	dx,ax
+%else
+	  save	eax
+%endif
+	   mmovd bx+DrvEnt.PartLoc, di+PartitionDescriptor.StartingLocation
+	   mmovd bx+DrvEnt.RootEnt+DirEnt.FSize, di+PartitionDescriptor.Length
+	  restore
+	 elifw [di] ,e, LogicalVolumeID
+	  ldd	di+LogicalVolumeDescriptor.ContentsUse+long_ad.Location+lb_addr.Location
+%ifdef i8086
+	  add	ax, [bx+DrvEnt.PartLoc]
+	  adc	dx, [bx+DrvEnt.PartLoc+2]
+%else
+	  add	eax, [bx+DrvEnt.PartLoc]
+%endif
+	  call	CdReadBlk
+	  mov	di, [bx+DrvEnt.Bufp]
+	  retif nz
+	  lea	si, [di+FileSetDescriptor.LVIdentifier]
+	  mov	di, dir_name
+	  mov	cl, [si+127]
+	  movb	[lbllen], 11
+	  call	UDFtoFCB
+	  movb	[lbllen], 8
+	  cmp	al, al		; STZ
+	  ret.
+	 fi
+	 ifw [di] ,e, TerminatorID
+	  inc	ax		; CLZ
+	  ret.
+	 fi
+	 inc	ax		; assume within first 64Ki sectors
+	 call	CdReadBlk
+	 mov	di, [bx+DrvEnt.Bufp]
+	until nz
+	return
+%endif ; UDF
+
+
 ;+
 ; FUNCTION : InitCD
 ;
@@ -727,7 +856,15 @@ InitCD
 	 mov	di, [di+DirEnt.Forw]
 	next
 
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 lea	di, [bx+DrvEnt.RootEnt+DirEnt.FSize-28h]
+	 jmp	.vol
+	fi
+%endif
+
 	mov	di, [bx+DrvEnt.Bufp]
+
 %ifdef i8086
 	ifw. {[di+isoVol.ID] ,e, 'CD'},\
 	 cmpw	[di+isoVol.ID+2], '00'
@@ -757,9 +894,30 @@ InitCD
 	lea	di, [di+isoVol.VolID]
 .copy:
 	mov	[bx+DrvEnt.Type], cl
-	decw	[di+28h+2]		; VolSizeLSB (relative to VolID)
-	cmov	ax, ns, -1, [di+28h]
+.vol:	mov	cl, 1
+	mov	ax, [di+28h]		; VolSizeLSB (relative to VolID)
+	while [di+28h+2] nzw
+	 shl	cl, 1
+	 shrw	[di+28h+2], 1
+	 rcr	ax, 1
+	wend
+	mov	[bx+DrvEnt.VolSPC],  cl
 	mov	[bx+DrvEnt.VolSize], ax
+
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 mov	di, si
+	 mov	si, [bx+DrvEnt.Bufp]
+	 lea	si, [si+FileSetDescriptor.RootDirectoryICB-FileIdentifierDescriptor.ICB]
+	 save	es
+	  ld	es, ds
+	  mov	al, A_SUBDIR
+	  call	DirFieldCopy
+	 restore
+	 mov	si, icbloc-Blkoff
+	 jmp	.root
+	fi
+%endif
 
 	save	es,si
 	 ld	es, ds
@@ -789,6 +947,9 @@ InitCD
  %endif
 	forb	[si-isoVol.DirRec],,nz,+ ; -1 is terminator ID
 	 call	CdReadBlk
+ %ifdef UDF
+	 mov	si, [bx+DrvEnt.Bufp]
+ %endif
 	 break nz
 	 ifb [si-isoVol.DirRec] ,e, 2	; SVD
 	 andifw [si+isoVol.Unused3-isoVol.DirRec] ,e, '%/' ; escape sequence
@@ -803,7 +964,8 @@ InitCD
 
 .jol:	mmovd	di+DirEnt.FSize, si+Sizeoff
 %endif
-.root:	mmovd	di+DirEnt.ParentBlk, si+Blkoff
+.root:	ldd	si+Blkoff
+	mmovd	di+DirEnt.ParentBlk
 setblk
 	mmovd	di+DirEnt.BlkNo
 %ifndef JOLIET
@@ -906,6 +1068,12 @@ RD_Read
 	fi
 	mov	[BP_(scratch)], cx
 
+ %ifdef UDF
+	ifflg [BP_(Udf)]
+	 jmp	RD_exit
+	fi
+ %endif
+
 	; Calculate block with start of data
 	mov	si, ax
 	and	si, SECTORSIZE-1
@@ -950,6 +1118,44 @@ RD_Read
 	 xchg	cx, ax
 	fi
 	mov	dx, cx
+
+ %ifdef UDF
+	ifflg [BP_(Udf)]
+	 mov	eax, [es:di+SFT.FBN]
+	 call	CdReadBlk
+	 jnz	Err15
+	 mov	si, [BP_(DriveOfs)]
+	 mov	si, [si+DrvEnt.Bufp]
+	 mov	al, [si+FileEntry.ICBTag+icbtag.Flags]
+	 ifb. {[si] ,e, ExFileEntryID & 255}, \
+	   add	si, ExFileEntry.LengthofExtendedAttributes-FileEntry.LengthofExtendedAttributes
+	 add	si, [si+FileEntry.LengthofExtendedAttributes]
+	 and	al, bit(0,1,2)
+	 add	si, FileEntry_size
+	 if al ,e, 3
+	  mov	ax, [es:di+SFT.FilPos]	; must be smaller than 2048
+	  mov	cx, dx
+	  save	es,di,cx
+	   les	di, [BP_(DTApp)]
+	   add	si, ax
+	   les	di, [es:di]
+	   rep	movsb
+	  restore
+	  add	[es:di+SFT.FilPos], cx
+	  mov	[BP_(_CX)], cx
+	  ret.
+	 fi
+	 add	si, 4			; assume short_ad, skip size
+	 ldd	si
+  %ifdef i8086
+	 add	ax, [bx+DrvEnt.PartLoc]
+	 adc	dx, [bx+DrvEnt.PartLoc+2]
+  %else
+	 add	eax, [bx+DrvEnt.PartLoc]
+  %endif
+	 ret.
+	fi
+ %endif
 
 	; Calculate block with start of data
 	mov	eax, [es:di+SFT.FilPos]
@@ -1007,7 +1213,7 @@ RD_Read
 	next
 	restore
 
-	zero	ax			; clears carry
+.ret:	zero	ax			; clears carry
 	ret
 
 
@@ -1028,7 +1234,7 @@ RD_GetSpace
 	mmovw	[_BX], [bx+DrvEnt.VolSize] ; # clusters on drive
 	zero	ax
 	mov	[_DX], ax		; # clusters available
-	inc	ax			; # sectors/cluster & Media ID
+	mov	al, [bx+DrvEnt.VolSPC]	; # sectors/cluster
 	;clc				; cleared by zero
 	ret
 
@@ -1179,6 +1385,10 @@ RD_FindFirst
 	 if	eax ,e, [bx+DrvEnt.RootEnt+DirEnt.BlkNo]
 %endif
 	  mov	cl, 2			; CX = 0 from mov11b
+%ifdef UDF
+	  tflg	[BP_(Udf)]
+	  sbb	cl, ch			; UDF doesn't have the . entry
+%endif
 	 fi
 	 xchg	ax, cx
 	 stosw				; SDB.Entry
@@ -1251,7 +1461,7 @@ RD_FindNext
 
 DoFindFirst
 
-%ifdef HS
+%ifdef HS UDF
 	mmovb	[Glob.flag], [bx+DrvEnt.Type]
 %endif
 	mov	al, [es:di+SDB.SAttr]
@@ -1270,7 +1480,11 @@ DoFindFirst
 	ldd	es:di+SDB.ParentBlk
 	save	di
 	 mov	di, [es:di+SDB.ParentSize]
+%ifdef UDF
+	 movw	[Matchfunc], Glob
+%else
 	 movw	[Matchfunc], Glob - Matchfunc-2
+%endif
 	 call	FindName
 	 mov	bx, di
 	restore
@@ -1334,6 +1548,12 @@ DirFieldCopy
 	stosb				; .Fattr
 	add	di, DirEnt.FTime - DirEnt.Fattr-1
 	call	ToDosDateTime
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 lea	si, [bx+FileEntry.InformationLength-Sizeoff]
+	 clc
+	fi
+%endif
 %ifdef i8086
 	stosw
 	xchg	ax, dx
@@ -1447,6 +1667,10 @@ CD_CAB
 	jnz	CD_VTOC.e15
 
 	mov	di, bx
+%ifdef UDF
+	; Just ignore these until someone actually wants them
+	jflg	[BP_(Udf)], .nul
+%endif
 	mov	bx, [BP_(DriveOfs)]
 	mov	al, [_AX]
 	mov	si, [bx+DrvEnt.Bufp]
@@ -1649,6 +1873,9 @@ dir_ent:
 	shr	ch, 1			; Canonical entry not supported
 .e1:	jc	err1
 	call	SetForUs
+%ifdef UDF
+	jflg	[BP_(Udf)], Err0F
+%endif
 	cmpb	[es:bx], PATHSEPARATOR
 .e2:	jne	Err02			; must be absolute path
 	sub	bx, RootSlashOff	; path adjustment
@@ -1725,6 +1952,166 @@ CD_Request
 	ret
 
 
+%ifdef UDF
+UDFtoFCB1
+	; assume ES = DS, until I add DOSLFN support
+	mov	bx, [si+FileIdentifierDescriptor.LengthOfImplementationUse]
+	lea	bx, [si+FileIdentifierDescriptor_size+bx]
+	movzx.	cx, [si+FileIdentifierDescriptor.IdentifierLength]
+	mov	si, bx
+
+;+
+; FUNCTION : UDFtoFCB
+;
+;	Convert an OSTA Compressed Unicode filename to an FCB-style name.
+;	This is *not* the compliant algorithm (I don't use the base-41 CRC).
+;
+; Parameters:
+;	SI -> name
+;	CX := length (in bytes, including compression id)
+;
+; Returns:
+;	SI -> dir_name := FCB name.
+;
+; Destroys:
+;	AX,CX,DX,DI
+;-
+UDFtoFCB
+	uses	es,bp,bx
+	ld	es, ds
+	mov	di, dir_name
+	push	di
+
+	mov	al, ' '                 ; Blank-pad the name
+	save	di,cx
+	 mov	cl, 11
+	 rep	stosb
+	restore
+
+	lodsb				; get compression id
+	dec	cx
+	if s				; length of zero is parent directory
+	 mov	ax, '..'
+	 stosw
+	 jmp	.r
+	fi
+
+	cbw				; AH = 0 for 8-bit chars
+	movw	[uni2asc], ValidFilenameChar8
+	if al ,e, 16
+	 shr	cx, 1			; convert bytes to characters
+	 addw	[uni2asc], ValidFilenameChar16-ValidFilenameChar8
+	fi
+
+	; Find the extension and checksum
+	zero	bx			; pointer to extension
+	zero	bp			; length of extension, with dot
+	zero	dx			; checksum (DH = 0)
+	save	si,cx
+	repeat
+	 call	[uni2asc]
+	 rol	dl, 1
+	 xor	dl, al
+	 xor	dl, ah
+	 if ax ,e, '.'
+	  mov	bx, si
+	  mov	bp, cx
+	 fi
+	next
+	restore
+
+	push	dx
+	sub	cx, bp			; length of name
+	cflg	[suffix], dh
+	mov	dl, 8
+lbllen ib
+	call	.cpy
+	mov	cx, bp
+	if cxnz AND {byte [lbllen] ,ne, 11}	; label is simply 11 chars
+	 dec	cx
+	 mov	di, dir_name + 8
+	 mov	si, bx
+	 mov	dl, 3
+	 call	.cpy
+	fi
+	pop	ax
+	ifflg [suffix]
+	 mov	di, dir_name + 6	; three characters needed for checksum
+	 do				; find the end of the name
+	  dec	di
+	 whileb [di-1] ,e, ' '
+	 movb	[di], '#'               ; separate name & checksum
+	 aam	16			; split AL into AH & AL
+	 add	ax, 'AA'
+	 inc	di
+	 stosw
+	fi
+.r:	pop	si
+	return
+
+.cpy:	repeat
+	 call	[uni2asc]
+	 if nc
+	  cflg	[badchr], ah
+	  if al ,e, {' ','.'}
+	   call .sfx
+.bad:	   inc	ax	; CLZ
+	   jmp	.nxt
+	  fi
+	  if. {al ,[], 'a','z'}, cbit al, 5
+	 else
+	  jflg	[badchr], .bad
+	  mov	al, '_'
+	  call	.sfx
+	  sflg. [badchr]
+	 fi
+	 stosb
+	 dec	dx
+.nxt:	next nz
+	if cxnz
+.sfx:	 sflg	[suffix]
+	fi
+	ret
+
+
+;+
+; FUNCTION : ValidFilenameChar
+;
+;	Determine if a character is a valid filename character.
+;
+; Parameters:
+;	SI -> character
+;
+; Returns:
+;	SI -> next character
+;	AX := character
+;	NC if valid (AH = 0)
+;	CY if not
+;
+; Destroys:
+;
+;-
+ValidFilenameChar16			; big-endian
+	 lodsb
+	 mov	ah, al
+ValidFilenameChar8
+	 lodsb
+	 if {ax ,ae, 128} OR {al ,b, ' '}
+.inv:	  stc
+	  ret
+	 fi
+	 save	di,cx
+	  mov	di, invchr
+	  mov	cl, 17
+	  repne scasb
+	 restore
+	 je	.inv
+	 clc
+	 ret
+
+%endif ; UDF
+
+
 ;+
 ; FUNCTION : CDtoFCB
 ;
@@ -1741,6 +2128,10 @@ CD_Request
 ;	AX,BX,CX,DX,DI
 ;-
 CDtoFCB
+%ifdef UDF
+	jflg	[BP_(Udf)], UDFtoFCB1
+%endif
+
 	lea	di, [es:si+Nameoff]
 	movzx.	cx, [es:si+FIDLenoff]
 	mov	bx, dir_name
@@ -1843,8 +2234,31 @@ Match	uses	all
 ;	CX
 ;-
 ToDosDateTime
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 ldd	si+FileIdentifierDescriptor.ICB+long_ad.Location+lb_addr.Location
+	 mov	si, [BP_(DriveOfs)]
+ %ifdef i8086
+	 add	ax, [si+DrvEnt.PartLoc]
+	 adc	dx, [si+DrvEnt.PartLoc+2]
+ %else
+	 add	eax, [si+DrvEnt.PartLoc]
+ %endif
+	 mmovd	BP_(icbloc)
+	 call	CdReadBlk
+	 mov	bx, [si+DrvEnt.Bufp]
+	 lea	si, [bx+FileEntry.ModificationTime-Dateoff+3]
+	 ifb. {[bx] ,e, ExFileEntryID & 255}, \
+	  add	si, ExFileEntry.ModificationTime-FileEntry.ModificationTime
+	 mov	ax, [si+timestamp.Year+Dateoff-3]
+	 sub	ax, 1980
+	else
+%endif
 	mov	al, [si+Dateoff+Date_Time.Yr]
 	sub	al, 80			; ISO is from 1900, DOS is from 1980
+%ifdef UDF
+	fi
+%endif
 	cmov c, al, 0
 %ifdef i8086
 	mov	cl, 4
@@ -2235,7 +2649,7 @@ DirLook uses	es,di
 	; Take from tail of cache queue
 	mov	di, [bx+DirEnt.Back]
 	mmovd	di+DirEnt.ParentBlk
-%ifdef HS
+%ifdef HS UDF
 	movzx.	bx, [bx+DrvEnt.Type-DrvEnt.RootEnt]
 	mov	al, [si+bx]
 %else
@@ -2243,6 +2657,11 @@ DirLook uses	es,di
 %endif
 	call	ToDosAttr
 	call	DirFieldCopy
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 ldd	BP_(icbloc)
+	else
+%endif
 %ifdef i8086
 	ldd	si+Blkoff
 	add	al, [si+ExAttroff]
@@ -2251,6 +2670,9 @@ DirLook uses	es,di
 %else
 	movzx	eax, byte [si+ExAttroff]
 	add	eax, [si+Blkoff]
+%endif
+%ifdef UDF
+	fi
 %endif
 	call	setblk
 
@@ -2295,7 +2717,11 @@ FindEntry
 %else
 	zero	dx
 %endif
+%ifdef UDF
+	movw	[Matchfunc], Match
+%else
 	movw	[Matchfunc], Match - Matchfunc-2
+%endif
 
 
 ;+
@@ -2317,7 +2743,6 @@ FindEntry
 ;	NZ if not found
 ;	   SI corrupted
 ;	EAX, DI & DX updated
-;	BX -> sector buffer
 ;
 ; Destroys:
 ;
@@ -2325,29 +2750,44 @@ FindEntry
 FindName
 	uses	es
 	ld	es, ds
-	mov	bx, [bx+DrvEnt.Bufp]
+
+%ifdef UDF
+	ifflg [BP_(Udf)]
+	 call	FindNameUDF
+	 ret.
+	fi
+%endif
+
 	repeatr di, ns
-	 call	CdReadBlk			; returns CH = 0
+	 call	CdReadBlk		; returns CH = 0
 	 break nz
 %ifdef i8086
 	 save	dx
 	 mov	dx, [BP_(scratch)]
 %endif
-	 for	si, bx, {[si] ,ne, ch}, cx	; {[si] nzb}
+	 mov	si, [bx+DrvEnt.Bufp]
+	 save	bx
+	 lea	bx, [si+SECTORSIZE]
+	 repeat
+%ifdef UDF
+	  call	[Matchfunc]
+%else
 	  call	Match
 Matchfunc iw
-%ifdef i8086
+%endif
 	  if z
+	   pop	bx
+%ifdef i8086
 	   mov	[BP_(scratch)], dx
 	   pop	dx
+%endif
 	   ret.
 	  fi
-%else
-	  retif z
-%endif
 	  mov	cl, [si]
 	  inc	dx
-	 next
+	  add	si, cx
+	 until {[si] ,e, ch} OR {si ,ae, bx}
+	 restore
 	 and	dl, 0c0h
 	 add	dx, 64
 %ifdef i8086
@@ -2360,6 +2800,87 @@ Matchfunc iw
 %endif
 	next
 	return
+
+
+%ifdef UDF
+;+
+; FUNCTION : FindNameUDF
+;
+;	Find a name in a UDF file system.
+;
+; Parameters:
+;	EAX := directory ICB
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+FindNameUDF
+%ifdef i8086
+	uses	dx,ax
+%else
+	uses	eax
+%endif
+	call	CdReadBlk
+	retif	nz
+	mov	si, [bx+DrvEnt.Bufp]
+	mov	al, [si+FileEntry.ICBTag+icbtag.Flags]
+	ifb. {[si] ,e, ExFileEntryID & 255}, \
+	 add	si, ExFileEntry.LengthofExtendedAttributes-FileEntry.LengthofExtendedAttributes
+	add	si, [si+FileEntry.LengthofExtendedAttributes]
+	and	al, bit(0,1,2)
+	add	si, FileEntry_size
+	zero	di
+	jif al ,e, 3, .beg
+	lodsw				; assume short_ad, skip size
+	lodsw
+	ldd	si
+%ifdef i8086
+	add	ax, [bx+DrvEnt.PartLoc]
+	adc	dx, [bx+DrvEnt.PartLoc+2]
+%else
+	add	eax, [bx+DrvEnt.PartLoc]
+%endif
+	repeatr di, ns
+	 call	CdReadBlk
+	 break nz
+%ifdef i8086
+	 save	dx
+	 mov	dx, [BP_(scratch)]
+%endif
+	 mov	si, [bx+DrvEnt.Bufp]
+.beg:	 for	si,, {word [si] ,e, FileIdID}, cx
+	  ifb [si+FileIdentifierDescriptor.Characteristics] ,&!, U_DELETED
+	   call [Matchfunc]		; CH zero from CdReadBlk
+%ifdef i8086
+	   if z
+	    mov [BP_(scratch)], dx
+	    pop dx
+	    ret.
+	   fi
+%else
+	   retif z
+%endif
+	  fi
+	  mov	cl, [si+FileIdentifierDescriptor.IdentifierLength]
+	  add	cx, [si+FileIdentifierDescriptor.LengthOfImplementationUse]
+	  add	cx, 38+3
+	  and	cx, ~3
+	  inc	dx
+	 next
+	 inc	dx
+%ifdef i8086
+	 mov	[BP_(scratch)], dx
+	 restore
+	 add	ax, 1
+	 adc	dx, 0
+%else
+	 inc	eax
+%endif
+	next
+	return
+%endif
 
 
 ;+
@@ -2467,7 +2988,7 @@ DDCall	uses	ax,si
 ;	   EAX destroyed
 ;
 ; Destroys:
-;	CX (1)
+;	CX (CH=0)
 ;-
 CdReadPVD
 %ifdef i8086
@@ -2480,22 +3001,70 @@ CdReadPVD
 
 CdReadBlk
 	uses	es,bx,di
+	ld	es, ds
 	mov	di, [BP_(DriveOfs)]
-%ifdef i8086
-	if {ax ,ne, [di+DrvEnt.BufBlkNo]} OR {dx ,ne, [di+DrvEnt.BufBlkNo+2]}
-%else
-	if eax ,ne, [di+DrvEnt.BufBlkNo]
-%endif
-	 ld	es, ds
-	 mov	bx, [di+DrvEnt.Bufp]
-	 call	CdReadLong1
-%ifdef i8086
-	 if. nz, mov dx, -1
-%else
-	 if. nz, or eax, -1
-%endif
-	 mmovd	di+DrvEnt.BufBlkNo
+
+%ifdef UDF
+ %ifdef i8086
+	if {ax ,e, [di+DrvEnt.BufBlkNo]} AND {dx ,e, [di+DrvEnt.BufBlkNo+2]}
+ %else
+	if eax ,e, [di+DrvEnt.BufBlkNo]
+ %endif
+	 ifnzb [di+DrvEnt.Bufpp]
+	  decb	[di+DrvEnt.Bufpp]
+	  mov	cl, SECTORSIZE >> 8
+.aret:	  add	[di+DrvEnt.Bufp+1], cl
+	 fi
+.cret:	 zero	ch
+	 ret.
 	fi
+ %ifdef i8086
+	if {ax ,e, [di+DrvEnt.BufBakNo]} AND {dx ,e, [di+DrvEnt.BufBakNo+2]}
+ %else
+	if eax ,e, [di+DrvEnt.BufBakNo]
+ %endif
+	 ifzb [di+DrvEnt.Bufpp]
+	  incb	[di+DrvEnt.Bufpp]
+	  mov	cl, -(SECTORSIZE >> 8)
+	  jmp	.aret
+	 fi
+	 jmp	.cret
+	fi
+	ifnzb [di+DrvEnt.Bufpp]
+	 decb	[di+DrvEnt.Bufpp]
+	 addb	[di+DrvEnt.Bufp+1], SECTORSIZE >> 8
+	else
+ %ifdef i8086
+	 save	si,di
+	  mmov	si, [di+DrvEnt.BufBakNo],   [di+DrvEnt.BufBlkNo]
+	  mmov	si, [di+DrvEnt.BufBakNo+2], [di+DrvEnt.BufBlkNo+2]
+ %else
+	 save	esi,di
+	  mmov	esi, [di+DrvEnt.BufBakNo], [di+DrvEnt.BufBlkNo]
+ %endif
+	  mov	si, [di+DrvEnt.Bufp]
+	  lea	di, [si-SECTORSIZE]
+	  mov	cx, SECTORSIZE / 2
+	  rep	movsw
+	 restore
+	fi
+%else
+ %ifdef i8086
+	zero	ch
+	retif {ax ,e, [di+DrvEnt.BufBlkNo]} AND {dx ,e, [di+DrvEnt.BufBlkNo+2]}
+ %else
+	retif eax ,e, [di+DrvEnt.BufBlkNo]
+ %endif
+%endif
+	mov	bx, [di+DrvEnt.Bufp]
+	call	CdReadLong1
+%ifdef i8086
+	if. nz, mov dx, -1
+%else
+	if. nz, or eax, -1
+%endif
+	mmovd	di+DrvEnt.BufBlkNo
+
 	return
 
 
@@ -2603,6 +3172,12 @@ COptionMsg	db  ln,"Compile-time options: "
 		db  "supported, "
 		db  "image on CD "
 %ifndef CDIMAGE
+		db  "not "
+%endif
+		db  "supported,"
+		db  ln,"                      "
+		db  "UDF "
+%ifndef UDF
 		db  "not "
 %endif
 		db  "supported."
@@ -2978,8 +3553,12 @@ Begin:
 	 add	ax, 3			; align to DWORD
 	 and	ax, ~3
 	 mov	[IODatap], ax		; relocate IOData buffers
-	 mov	ax, SECTORSIZE + 1	; find buffer space needed (add one for
-	 mul	cx			;  a directory scan sentinel)
+%ifdef UDF
+	 mov	ax, 2 * SECTORSIZE
+%else
+	 mov	ax, SECTORSIZE		; find buffer space needed
+%endif
+	 mul	cx
 	 add	ax, [IODatap]		; last byte to keep now in ax
 	 jc	NotEnoughMem
 	 call	AllocMem
@@ -4033,7 +4612,11 @@ Install:
 	for	bx, Drive, *,, DrvEnt_size
 	 call	InitDrive
 	 addw	[DirCachep], CACHESIZE
-	 addw	[IODatap], SECTORSIZE + 1
+%ifdef UDF
+	 addw	[IODatap], 2 * SECTORSIZE
+%else
+	 addw	[IODatap], SECTORSIZE
+%endif
 	next
 
 	mov	al, [FirstDriveNo]	; return with first drive number
@@ -4091,7 +4674,14 @@ Install:
 ;-
 InitDrive
 	uses	cx
+%ifdef UDF
+	mov	ax, [IODatap]
+	add	ah, SECTORSIZE >> 8
+	mov	[bx+DrvEnt.Bufp], ax
+	zerob	[bx+DrvEnt.Bufpp]
+%else
 	mmovw	[bx+DrvEnt.Bufp], [IODatap]
+%endif
 	; link up cache for dir entries
 	mov	di, i(DirCachep)
 DirCachep iw

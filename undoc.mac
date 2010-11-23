@@ -7,8 +7,10 @@
 ; jmh 040802 - converted to NASM, added stuff from redir.h.
 ; jmh 041112 - added CDROOT conditional to use \\D.\A. form.
 ; jmh 041117 - removed VARBLKSIZE
+; jmh 060110 - store "sectors per cluster" for a better volume size
 
 ;%define CDROOT
+;%define UDF
 
 ;
 ;   various useful DOS structures
@@ -138,7 +140,13 @@ struc DrvEnt
   .Bufp 	resw	 1
   .LastAccess	resw	 1
   .BufBlkNo	resd	 1
+%ifdef UDF
+  .BufBakNo	resd	 1
+  .PartLoc	resd	 1		; partition location
+  .Bufpp	resb	 1
+%endif
   .VolSize	resw	 1
+  .VolSPC	resb	 1
   .RootEnt	resb	DirEnt_size	; volume label is stored in FName
 endstruc
 
