@@ -317,7 +317,7 @@ CD_Table	dw	CD_Number	; 00 Get number of CD-ROM drives
 %ifdef JOLIET
 		dw	CD_VolDesc	; 0E Get/Set vol. descriptor preference
 %else
-		dw	CD_Unsupported	; 0E Get/Set vol. descriptor preference
+		dw	CD_unsupported	; 0E Get/Set vol. descriptor preference
 %endif
 		dw	CD_DirEntry	; 0F Get directory entry
 		dw	CD_Request	; 10 Send device request
