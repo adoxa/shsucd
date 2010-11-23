@@ -1,0 +1,831 @@
+diff -urN zlib.121\crc32.c zlib\crc32.c
+--- zlib.121\crc32.c	Mon Sep 08 06:52:28 2003
++++ zlib\crc32.c	Sat Apr 02 16:35:02 2005
+@@ -49,9 +49,13 @@
+                 (((w)&0xff00)<<8)+(((w)&0xff)<<24))
+    local unsigned long crc32_little OF((unsigned long,
+                         const unsigned char FAR *, unsigned));
++# ifndef SHSUCDRD
+    local unsigned long crc32_big OF((unsigned long,
+                         const unsigned char FAR *, unsigned));
+ #  define TBLS 8
++# else
++#  define TBLS 4
++# endif
+ #else
+ #  define TBLS 1
+ #endif /* BYFOUR */
+@@ -119,7 +123,7 @@
+         c = crc_table[0][n];
+         crc_table[4][n] = REV(c);
+         for (k = 1; k < 4; k++) {
+-            c = crc_table[0][c & 0xff] ^ (c >> 8);
++            c = crc_table[0][(Byte)c] ^ (c >> 8);
+             crc_table[k][n] = c;
+             crc_table[k + 4][n] = REV(c);
+         }
+@@ -174,6 +178,7 @@
+ #include "crc32.h"
+ #endif /* DYNAMIC_CRC_TABLE */
+ 
++#ifndef SHSUCDRD
+ /* =========================================================================
+  * This function can be used by asm versions of crc32()
+  */
+@@ -184,6 +189,7 @@
+ #endif /* DYNAMIC_CRC_TABLE */
+   return (const unsigned long FAR *)crc_table;
+ }
++#endif
+ 
+ /* ========================================================================= */
+ #define DO1 crc = crc_table[0][((int)crc ^ (*buf++)) & 0xff] ^ (crc >> 8)
+@@ -202,6 +208,9 @@
+         make_crc_table();
+ #endif /* DYNAMIC_CRC_TABLE */
+ 
++#ifdef SHSUCDRD
++    return crc32_little(crc, buf, len);
++#else
+ #ifdef BYFOUR
+     if (sizeof(void *) == sizeof(ptrdiff_t)) {
+         u4 endian;
+@@ -222,14 +231,15 @@
+         DO1;
+     } while (--len);
+     return crc ^ 0xffffffffUL;
++#endif /* SHSUCDRD */
+ }
+ 
+ #ifdef BYFOUR
+ 
+ /* ========================================================================= */
+ #define DOLIT4 c ^= *buf4++; \
+-        c = crc_table[3][c & 0xff] ^ crc_table[2][(c >> 8) & 0xff] ^ \
+-            crc_table[1][(c >> 16) & 0xff] ^ crc_table[0][c >> 24]
++        c = crc_table[3][(Byte)c] ^ crc_table[2][(Byte)(c >> 8)] ^ \
++            crc_table[1][(Byte)(c >> 16)] ^ crc_table[0][(Byte)(c >> 24)]
+ #define DOLIT32 DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4
+ 
+ /* ========================================================================= */
+@@ -244,7 +254,7 @@
+     c = (u4)crc;
+     c = ~c;
+     while (len && ((ptrdiff_t)buf & 3)) {
+-        c = crc_table[0][(c ^ *buf++) & 0xff] ^ (c >> 8);
++        c = crc_table[0][(Byte)(c ^ *buf++)] ^ (c >> 8);
+         len--;
+     }
+ 
+@@ -260,12 +270,13 @@
+     buf = (const unsigned char FAR *)buf4;
+ 
+     if (len) do {
+-        c = crc_table[0][(c ^ *buf++) & 0xff] ^ (c >> 8);
++        c = crc_table[0][(Byte)(c ^ *buf++)] ^ (c >> 8);
+     } while (--len);
+     c = ~c;
+     return (unsigned long)c;
+ }
+ 
++#ifndef SHSUCDRD
+ /* ========================================================================= */
+ #define DOBIG4 c ^= *++buf4; \
+         c = crc_table[4][c & 0xff] ^ crc_table[5][(c >> 8) & 0xff] ^ \
+@@ -307,5 +318,7 @@
+     c = ~c;
+     return (unsigned long)(REV(c));
+ }
++
++#endif /* SHSUCDRD */
+ 
+ #endif /* BYFOUR */
+diff -urN zlib.121\crc32.h zlib\crc32.h
+--- zlib.121\crc32.h	Mon Jan 06 02:53:36 2003
++++ zlib\crc32.h	Thu Mar 31 15:24:16 2005
+@@ -220,6 +220,7 @@
+     0xb1b8e695UL, 0xa30d497bUL, 0x1bb12e1eUL, 0x43d23e48UL, 0xfb6e592dUL,
+     0xe9dbf6c3UL, 0x516791a6UL, 0xccb0a91fUL, 0x740cce7aUL, 0x66b96194UL,
+     0xde0506f1UL
++#ifndef SHSUCDRD
+   },
+   {
+     0x00000000UL, 0x96300777UL, 0x2c610eeeUL, 0xba510999UL, 0x19c46d07UL,
+@@ -436,6 +437,7 @@
+     0x95e6b8b1UL, 0x7b490da3UL, 0x1e2eb11bUL, 0x483ed243UL, 0x2d596efbUL,
+     0xc3f6dbe9UL, 0xa6916751UL, 0x1fa9b0ccUL, 0x7ace0c74UL, 0x9461b966UL,
+     0xf10605deUL
++#endif
+ #endif
+   }
+ };
+diff -urN zlib.121\gzi.c zlib\gzi.c
+--- zlib.121\gzi.c	Thu Jan 01 10:00:00 1970
++++ zlib\gzi.c	Sun Apr 03 11:10:02 2005
+@@ -0,0 +1,332 @@
++/* gzio.c -- IO on .gz files
++ * Copyright (C) 1995-2003 Jean-loup Gailly.
++ * For conditions of distribution and use, see copyright notice in zlib.h
++ *
++ * Stripped down version to just gunzip one file at a time, on 16-bit DOS
++ * (small model), without any C library functions. (Developed with BC, probably
++ * requires modifications for other compilers.)
++ * Jason Hood, March 2005.
++ */
++
++#include "zutil.h"
++
++#define FILE int
++#define EOF (-1)
++#define size_t unsigned int
++local int    errno;
++local FILE   hopen( const char* );
++local size_t hread( void*, size_t );
++local int    hclose( void );
++
++
++#define Z_BUFSIZE 16384
++
++#define gz_magic 0x8b1fu  /* gzip magic header */
++
++/* gzip flag byte */
++#define ASCII_FLAG   0x01 /* bit 0 set: file probably ascii text */
++#define HEAD_CRC     0x02 /* bit 1 set: header CRC present */
++#define EXTRA_FIELD  0x04 /* bit 2 set: extra field present */
++#define ORIG_NAME    0x08 /* bit 3 set: original file name present */
++#define COMMENT      0x10 /* bit 4 set: file comment present */
++#define RESERVED     0xE0 /* bits 5..7: reserved */
++
++typedef struct gz_stream {
++    z_stream stream;
++    int      z_err;   /* error code for last stream operation */
++    int      z_eof;   /* set if end of input file */
++    FILE     file;    /* .gz file */
++    uLong    crc;     /* crc32 of uncompressed data */
++    int      transparent; /* 1 if input file is not a .gz file */
++} gz_stream;
++
++local gz_stream s;
++local Byte gzbuf[Z_BUFSIZE];
++
++      int    gz_open	  (const char* path);
++      int    gz_read	  (voidp buf, unsigned len);
++      int    gz_close	  (void);
++local int    get_byte	  (void);
++local void   check_header (void);
++local uLong  getLong	  (void);
++
++/* ===========================================================================
++     Opens a gzip (.gz) file for reading.
++     gz_open returns -1 if the file could not be opened, 0 if gzip, 1 if not.
++*/
++int gz_open(const char* path)
++{
++    s.crc	  =	// crc32(0L, Z_NULL, 0) == 0
++    s.z_err	  =
++    s.z_eof	  =
++    s.transparent = 0;
++
++    inflateInit2(&(s.stream), -MAX_WBITS);
++    s.stream.avail_out = Z_BUFSIZE;
++
++    s.file = hopen(path);
++
++    if (s.file == 0) {
++	return -1;
++    }
++
++    check_header(); /* skip the .gz header */
++
++    return s.transparent;
++}
++
++/* ===========================================================================
++     Read a byte from a gz_stream; update next_in and avail_in. Return EOF
++   for end of file.
++   IN assertion: the stream s has been sucessfully opened for reading.
++*/
++local int get_byte(void)
++{
++    if (s.z_eof) return EOF;
++    if (s.stream.avail_in == 0) {
++        errno = 0;
++	s.stream.avail_in = hread(gzbuf, Z_BUFSIZE);
++	if (s.stream.avail_in == 0) {
++	    s.z_eof = 1;
++	    if (errno) s.z_err = Z_ERRNO;
++            return EOF;
++        }
++	s.stream.next_in = gzbuf;
++    }
++    s.stream.avail_in--;
++    return *(s.stream.next_in)++;
++}
++
++/* ===========================================================================
++      Check the gzip header of a gz_stream opened for reading. Set the stream
++    mode to transparent if the gzip magic header is not present; set s.err
++    to Z_DATA_ERROR if the magic header is present but the rest of the header
++    is incorrect.
++    IN assertion: the stream s has already been created sucessfully.
++*/
++local void check_header(void)
++{
++    int method; /* method byte */
++    int flags;  /* flags byte */
++    uInt len;
++    int c;
++
++    errno = 0;
++    s.stream.avail_in = hread(gzbuf, Z_BUFSIZE);
++    if (s.stream.avail_in == 0 && errno) s.z_err = Z_ERRNO;
++    s.stream.next_in = gzbuf;
++    if (s.stream.avail_in < 2 ||
++	*(uInt*)gzbuf != gz_magic) {
++	s.transparent = 1;
++        return;
++    }
++    s.stream.avail_in -= 2;
++    s.stream.next_in += 2;
++
++    /* Check the rest of the gzip header */
++    method = get_byte();
++    flags = get_byte();
++    if (method != Z_DEFLATED || (flags & RESERVED) != 0) {
++	s.z_err = Z_DATA_ERROR;
++        return;
++    }
++
++    /* Discard time, xflags and OS code: */
++    getLong();
++    get_byte();
++    get_byte();
++
++    if ((flags & EXTRA_FIELD) != 0) { /* skip the extra field */
++	len  =	(uInt)get_byte();
++	len += ((uInt)get_byte())<<8;
++        /* len is garbage if EOF but the loop below will quit anyway */
++	while (len-- != 0 && get_byte() != EOF) ;
++    }
++    if ((flags & ORIG_NAME) != 0) { /* skip the original file name */
++	while ((c = get_byte()) != 0 && c != EOF) ;
++    }
++    if ((flags & COMMENT) != 0) {   /* skip the .gz file comment */
++	while ((c = get_byte()) != 0 && c != EOF) ;
++    }
++    if ((flags & HEAD_CRC) != 0) {  /* skip the header crc */
++	get_byte();
++	get_byte();
++    }
++    s.z_err = s.z_eof ? Z_DATA_ERROR : Z_OK;
++}
++
++ /* ===========================================================================
++ * Cleanup then free the given gz_stream. Return a zlib error code.
++ */
++int gz_close (void)
++{
++    int err = Z_OK;
++
++    if (hclose()) {
++            err = Z_ERRNO;
++    }
++    if (s.z_err < 0) err = s.z_err;
++
++    return err;
++}
++
++/* ===========================================================================
++     Reads the given number of uncompressed bytes from the compressed file.
++   gzread returns the number of bytes actually read (0 for end of file).
++*/
++int gz_read (buf, len)
++    voidp buf;
++    unsigned len;
++{
++    Bytef *start = (Bytef*)buf; /* starting point for crc computation */
++    Byte  *next_out; /* == stream.next_out but not forced far (for MSDOS) */
++
++    if (s.z_err == Z_DATA_ERROR || s.z_err == Z_ERRNO) return -1;
++    if (s.z_err == Z_STREAM_END) return 0;  /* EOF */
++
++    next_out = (Byte*)buf;
++    s.stream.next_out = (Bytef*)buf;
++    s.stream.avail_out = len;
++
++    while (s.stream.avail_out != 0) {
++
++	if (s.transparent) {
++            /* Copy first the lookahead bytes: */
++	    uInt n = s.stream.avail_in;
++	    if (n > s.stream.avail_out) n = s.stream.avail_out;
++            if (n > 0) {
++		zmemcpy(s.stream.next_out, s.stream.next_in, n);
++                next_out += n;
++		s.stream.next_out = next_out;
++		s.stream.next_in   += n;
++		s.stream.avail_out -= n;
++		s.stream.avail_in  -= n;
++            }
++	    if (s.stream.avail_out > 0) {
++		s.stream.avail_out -= hread(next_out, s.stream.avail_out);
++            }
++	    len -= s.stream.avail_out;
++	    if (len == 0) s.z_eof = 1;
++            return (int)len;
++        }
++	if (s.stream.avail_in == 0 && !s.z_eof) {
++
++            errno = 0;
++	    s.stream.avail_in = hread(gzbuf, Z_BUFSIZE);
++	    if (s.stream.avail_in == 0) {
++		s.z_eof = 1;
++		if (errno) {
++		    s.z_err = Z_ERRNO;
++                    break;
++                }
++            }
++	    s.stream.next_in = gzbuf;
++        }
++	s.z_err = inflate(&(s.stream), Z_NO_FLUSH);
++
++	if (s.z_err != Z_OK || s.z_eof) break;
++    }
++    s.crc = crc32(s.crc, start, (uInt)(s.stream.next_out - start));
++
++    if (s.z_err == Z_STREAM_END) {
++	if (getLong() != s.crc) {
++	    s.z_err = Z_DATA_ERROR;
++	    return -1;
++	}
++    }
++
++    return (int)(len - s.stream.avail_out);
++}
++
++/* ===========================================================================
++   Reads a long in LSB order from the given gz_stream. Sets z_err in case
++   of error.
++*/
++#pragma warn -rvl
++local uLong getLong (void)
++{
++/*
++    uLong x = (uLong)get_byte();
++    int c;
++
++    x += ((uLong)get_byte())<<8;
++    x += ((uLong)get_byte())<<16;
++    c = get_byte();
++    if (c == EOF) s.z_err = Z_DATA_ERROR;
++    x += ((uLong)c)<<24;
++    return x;
++*/
++  asm {
++	mov	si, offset get_byte	// automatically preserved
++	call	si			// call near ptr get_byte not working
++	mov	cl, al
++	call	si
++	mov	ch, al
++	call	si
++	mov	dl, al
++	call	si
++	mov	dh, al
++	cmp	al, EOF
++	xchg	cx, ax
++	jne	out
++	mov	word ptr s.z_err, Z_DATA_ERROR
++  }
++  out:
++}
++
++
++/* ===========================================================================
++     Simple file functions to remove C library dependence.
++*/
++local FILE hopen( const char* name )
++{
++  asm {
++	mov	ax, 0x3dc0
++	mov	dx, name
++	int	0x21
++	jnc	out
++	sub	ax, ax
++  }
++  out:
++}
++
++local size_t hread( void* buf, size_t len )
++{
++  asm {
++	mov	ah, 0x3f
++	mov	bx, word ptr s.file
++	mov	cx, len
++	mov	dx, buf
++	int	0x21
++	jnc	out
++	mov	errno, ax
++	sub	ax, ax
++  }
++  out:
++}
++
++local int    hclose( void )
++{
++  asm {
++	mov	ah, 0x3e
++	mov	bx, word ptr s.file
++	int	0x21
++	db	0xd6 //setalc
++	cbw
++  }
++}
++
++
++// Avoid needing zutil.c
++void zmemcpy(Byte FAR_ * dest, const Byte* source, uInt len)
++{
++  asm {
++	mov	si, source	// si & di automatically preserved
++	les	di, dest
++	mov	cx, len
++	shr	cx, 1
++	rep	movsw
++	adc	cx, cx
++	rep	movsb
++  }
++}
+diff -urN zlib.121\inffast.c zlib\inffast.c
+--- zlib.121\inffast.c	Sun Sep 14 10:23:44 2003
++++ zlib\inffast.c	Sat Apr 02 16:53:44 2005
+@@ -77,7 +77,7 @@
+     unsigned wsize;             /* window size or zero if not using window */
+     unsigned whave;             /* valid bytes in the window */
+     unsigned write;             /* window write index */
+-    unsigned char FAR *window;  /* allocated sliding window, if wsize != 0 */
++    unsigned char FAR_ *window; /* allocated sliding window, if wsize != 0 */
+     unsigned long hold;         /* local strm->hold */
+     unsigned bits;              /* local strm->bits */
+     code const FAR *lcode;      /* local strm->lencode */
+@@ -89,7 +89,7 @@
+                                 /*  window position, window bytes to copy */
+     unsigned len;               /* match length, unused bytes */
+     unsigned dist;              /* match distance */
+-    unsigned char FAR *from;    /* where to copy match from */
++    unsigned char FAR_ *from;   /* where to copy match from */
+ 
+     /* copy state to local variables */
+     state = (struct inflate_state FAR *)strm->state;
+@@ -118,7 +118,7 @@
+             hold += (unsigned long)(PUP(in)) << bits;
+             bits += 8;
+         }
+-        this = lcode[hold & lmask];
++        this = lcode[(uInt)hold & lmask];
+       dolen:
+         op = (unsigned)(this.bits);
+         hold >>= op;
+@@ -149,7 +149,7 @@
+                 hold += (unsigned long)(PUP(in)) << bits;
+                 bits += 8;
+             }
+-            this = dcode[hold & dmask];
++            this = dcode[(uInt)hold & dmask];
+           dodist:
+             op = (unsigned)(this.bits);
+             hold >>= op;
+@@ -246,7 +246,7 @@
+                 }
+             }
+             else if ((op & 64) == 0) {          /* 2nd level distance code */
+-                this = dcode[this.val + (hold & ((1U << op) - 1))];
++                this = dcode[this.val + ((uInt)hold & ((1U << op) - 1))];
+                 goto dodist;
+             }
+             else {
+@@ -256,7 +256,7 @@
+             }
+         }
+         else if ((op & 64) == 0) {              /* 2nd level length code */
+-            this = lcode[this.val + (hold & ((1U << op) - 1))];
++            this = lcode[this.val + ((uInt)hold & ((1U << op) - 1))];
+             goto dolen;
+         }
+         else if (op & 32) {                     /* end-of-block */
+diff -urN zlib.121\inflate.c zlib\inflate.c
+--- zlib.121\inflate.c	Sun Oct 26 16:15:38 2003
++++ zlib\inflate.c	Sun Apr 03 11:10:26 2005
+@@ -91,14 +91,21 @@
+ #  endif
+ #endif
+ 
++#ifdef SHSUCDRD
++local struct inflate_state infst;
++local unsigned char FAR_ stwnd[1u << MAX_WBITS];
++#endif
++
+ /* function prototypes */
+ local void fixedtables OF((struct inflate_state FAR *state));
+ local int updatewindow OF((z_streamp strm, unsigned out));
+ #ifdef BUILDFIXED
+    void makefixed OF((void));
+ #endif
++#ifndef SHSUCDRD
+ local unsigned syncsearch OF((unsigned FAR *have, unsigned char FAR *buf,
+                               unsigned len));
++#endif
+ 
+ int ZEXPORT inflateReset(strm)
+ z_streamp strm;
+@@ -134,6 +141,7 @@
+         return Z_VERSION_ERROR;
+     if (strm == Z_NULL) return Z_STREAM_ERROR;
+     strm->msg = Z_NULL;                 /* in case we return an error */
++#ifndef SHSUCDRD
+     if (strm->zalloc == (alloc_func)0) {
+         strm->zalloc = zcalloc;
+         strm->opaque = (voidpf)0;
+@@ -142,12 +150,16 @@
+     state = (struct inflate_state FAR *)
+             ZALLOC(strm, 1, sizeof(struct inflate_state));
+     if (state == Z_NULL) return Z_MEM_ERROR;
++#else
++    state = &infst;
++#endif
+     Tracev((stderr, "inflate: allocated\n"));
+     strm->state = (voidpf)state;
+     if (windowBits < 0) {
+         state->wrap = 0;
+         windowBits = -windowBits;
+     }
++#ifndef SHSUCDRD
+     else {
+         state->wrap = (windowBits >> 4) + 1;
+ #ifdef GUNZIP
+@@ -159,11 +171,17 @@
+         strm->state = Z_NULL;
+         return Z_STREAM_ERROR;
+     }
++#endif
+     state->wbits = (unsigned)windowBits;
++#ifndef SHSUCDRD
+     state->window = Z_NULL;
++#else
++    state->window = stwnd;
++#endif
+     return inflateReset(strm);
+ }
+ 
++#ifndef SHSUCDRD
+ int ZEXPORT inflateInit_(strm, version, stream_size)
+ z_streamp strm;
+ const char *version;
+@@ -171,6 +189,7 @@
+ {
+     return inflateInit2_(strm, DEF_WBITS, version, stream_size);
+ }
++#endif
+ 
+ /*
+    Return state with length and distance decoding tables and index sizes set to
+@@ -309,6 +328,7 @@
+ 
+     state = (struct inflate_state FAR *)strm->state;
+ 
++#ifndef SHSUCDRD
+     /* if it hasn't been done already, allocate space for the window */
+     if (state->window == Z_NULL) {
+         state->window = (unsigned char FAR *)
+@@ -316,6 +336,7 @@
+                                sizeof(unsigned char));
+         if (state->window == Z_NULL) return 1;
+     }
++#endif
+ 
+     /* if window not in use yet, initialize */
+     if (state->wsize == 0) {
+@@ -353,12 +374,17 @@
+ /* Macros for inflate(): */
+ 
+ /* check function to use adler32() for zlib or crc32() for gzip */
++#ifdef SHSUCDRD
++#  define UPDATE(check, buf, len) crc32(check, buf, len)
++#  define adler32(check, buf, len) 1L
++#else
+ #ifdef GUNZIP
+ #  define UPDATE(check, buf, len) \
+     (state->flags ? crc32(check, buf, len) : adler32(check, buf, len))
+ #else
+ #  define UPDATE(check, buf, len) adler32(check, buf, len)
+ #endif
++#endif
+ 
+ /* check macros for header crc */
+ #ifdef GUNZIP
+@@ -543,12 +569,12 @@
+     unsigned bits;              /* bits in bit buffer */
+     unsigned in, out;           /* save starting available input and output */
+     unsigned copy;              /* number of stored or match bytes to copy */
+-    unsigned char FAR *from;    /* where to copy match bytes from */
++    unsigned char FAR_ *from;   /* where to copy match bytes from */
+     code this;                  /* current decoding table entry */
+     code last;                  /* parent table entry */
+     unsigned len;               /* length to copy for repeats, bits to drop */
+     int ret;                    /* return code */
+-#ifdef GUNZIP
++#if defined(GUNZIP) && !defined(SHSUCDRD)
+     unsigned char hbuf[4];      /* buffer for gzip header crc calculation */
+ #endif
+     static const unsigned short order[19] = /* permutation of code lengths */
+@@ -571,6 +597,7 @@
+                 state->mode = TYPEDO;
+                 break;
+             }
++#ifndef SHSUCDRD
+             NEEDBITS(16);
+ #ifdef GUNZIP
+             if ((state->wrap & 2) && hold == 0x8b1f) {  /* gzip header */
+@@ -709,6 +736,7 @@
+             }
+             strm->adler = state->check = adler32(0L, Z_NULL, 0);
+             state->mode = TYPE;
++#endif
+         case TYPE:
+             if (flush == Z_BLOCK) goto inf_leave;
+         case TYPEDO:
+@@ -1081,6 +1109,7 @@
+     return ret;
+ }
+ 
++#ifndef SHSUCDRD
+ int ZEXPORT inflateEnd(strm)
+ z_streamp strm;
+ {
+@@ -1259,12 +1288,13 @@
+     /* copy state */
+     *dest = *source;
+     *copy = *state;
+-    copy->lencode = copy->codes + (state->lencode - state->codes);
+-    copy->distcode = copy->codes + (state->distcode - state->codes);
+-    copy->next = copy->codes + (state->next - state->codes);
++    copy->lencode = copy->codes + ((uInt)state->lencode - (uInt)state->codes);
++    copy->distcode = copy->codes + ((uInt)state->distcode - (uInt)state->codes);
++    copy->next = copy->codes + ((uInt)state->next - (uInt)state->codes);
+     if (window != Z_NULL)
+         zmemcpy(window, state->window, 1U << state->wbits);
+     copy->window = window;
+     dest->state = (voidpf)copy;
+     return Z_OK;
+ }
++#endif
+diff -urN zlib.121\inflate.h zlib\inflate.h
+--- zlib.121\inflate.h	Mon Sep 08 14:52:52 2003
++++ zlib\inflate.h	Sat Apr 02 16:49:14 2005
+@@ -91,7 +91,7 @@
+     unsigned wsize;             /* window size or zero if not using window */
+     unsigned whave;             /* valid bytes in the window */
+     unsigned write;             /* window write index */
+-    unsigned char FAR *window;  /* allocated sliding window, if needed */
++    unsigned char FAR_ *window; /* allocated sliding window, if needed */
+         /* bit accumulator */
+     unsigned long hold;         /* input bit accumulator */
+     unsigned bits;              /* number of bits in "in" */
+diff -urN zlib.121\Makefile.cdr zlib\Makefile.cdr
+--- zlib.121\Makefile.cdr	Thu Jan 01 10:00:00 1970
++++ zlib\Makefile.cdr	Tue May 31 11:23:50 2005
+@@ -0,0 +1,53 @@
++# Makefile for zlibcdrd
++# Borland C++
++# Last updated: 31-May-2005
++
++# To use, do "make -fmakefile.cdr"
++
++# ------------ Turbo C++, Borland C++ ------------
++
++# replace bcc with tcc for Turbo C++ 1.0
++CC=bcc
++LD=bcc
++AR=tlib
++
++# compiler flags
++# replace "-O2" by "-O -G -a -d" for Turbo C++ 1.0
++# BC3.1 does not like -Om.
++CFLAGS=-O2 -O-m -Z -ms -DSHSUCDRD -2
++
++LDFLAGS=-ms -f-
++
++
++# variables
++ZLIB_LIB = zlibcdrd.lib
++
++OBJ1 = crc32.obj gzi.obj inffast.obj inflate.obj inftrees.obj
++OBJP1 = +crc32.obj+gzi.obj+inffast.obj+inflate.obj+inftrees.obj
++
++
++# targets
++all: $(ZLIB_LIB)
++
++.c.obj:
++	$(CC) -c $(CFLAGS) $*.c
++
++crc32.obj: crc32.c zlib.h zconf.h crc32.h
++
++gzi.obj: gzi.c zutil.h zlib.h zconf.h
++
++inffast.obj: inffast.c zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h
++
++inflate.obj: inflate.c zutil.h zlib.h zconf.h inftrees.h inflate.h inffast.h \
++	     inffixed.h
++
++inftrees.obj: inftrees.c zutil.h zlib.h zconf.h inftrees.h
++
++
++$(ZLIB_LIB): $(OBJ1)
++	-del $(ZLIB_LIB)
++	$(AR) $(ZLIB_LIB) $(OBJP1)
++
++clean:
++	-del *.obj
++	-del *.lib
+diff -urN zlib.121\zconf.h zlib\zconf.h
+--- zlib.121\zconf.h	Wed Nov 05 08:54:54 2003
++++ zlib\zconf.h	Sat Apr 02 16:42:42 2005
+@@ -173,19 +173,22 @@
+      /* MSC small or medium model */
+ #    define SMALL_MEDIUM
+ #    ifdef _MSC_VER
+-#      define FAR _far
++#      define FAR_ _far
+ #    else
+-#      define FAR far
++#      define FAR_ far
+ #    endif
+ #  endif
+ #  if (defined(__SMALL__) || defined(__MEDIUM__))
+      /* Turbo C small or medium model */
+ #    define SMALL_MEDIUM
+ #    ifdef __BORLANDC__
+-#      define FAR _far
++#      define FAR_ _far
+ #    else
+-#      define FAR far
++#      define FAR_ far
+ #    endif
++#  endif
++#  if defined(FAR_) && !defined(SHSUCDRD)
++#    define FAR FAR_
+ #  endif
+ #endif
+ 
+diff -urN zlib.121\zlib.h zlib\zlib.h
+--- zlib.121\zlib.h	Tue Nov 18 07:19:12 2003
++++ zlib\zlib.h	Thu Mar 31 15:27:24 2005
+@@ -37,8 +37,8 @@
+ extern "C" {
+ #endif
+ 
+-#define ZLIB_VERSION "1.2.1"
+-#define ZLIB_VERNUM 0x1210
++#define ZLIB_VERSION "1.2.1.f-shsucdrd"
++#define ZLIB_VERNUM 0x121f
+ 
+ /*
+      The 'zlib' compression library provides in-memory compression and
+@@ -93,9 +93,11 @@
+     char     *msg;      /* last error message, NULL if no error */
+     struct internal_state FAR *state; /* not visible by applications */
+ 
++#ifndef SHSUCDRD
+     alloc_func zalloc;  /* used to allocate the internal state */
+     free_func  zfree;   /* used to free the internal state */
+     voidpf     opaque;  /* private data object passed to zalloc and zfree */
++#endif
+ 
+     int     data_type;  /* best guess about the data type: ascii or binary */
+     uLong   adler;      /* adler32 value of the uncompressed data */
+@@ -1185,7 +1187,7 @@
+         ZLIB_VERSION, sizeof(z_stream))
+ 
+ 
+-#if !defined(ZUTIL_H) && !defined(NO_DUMMY_DECL)
++#if (!defined(ZUTIL_H) && !defined(NO_DUMMY_DECL)) || defined(SHSUCDRD)
+     struct internal_state {int dummy;}; /* hack for buggy compilers */
+ #endif
+ 
+diff -urN zlib.121\zutil.h zlib\zutil.h
+--- zlib.121\zutil.h	Thu Nov 13 12:52:24 2003
++++ zlib\zutil.h	Sat Apr 02 16:46:28 2005
+@@ -221,9 +221,13 @@
+ #    define zmemzero(dest, len) memset(dest, 0, len)
+ #  endif
+ #else
++#  ifdef SHSUCDRD
++   extern void zmemcpy  OF((Byte FAR_ * dest, const Byte* source, uInt len));
++#  else
+    extern void zmemcpy  OF((Bytef* dest, const Bytef* source, uInt len));
+    extern int  zmemcmp  OF((const Bytef* s1, const Bytef* s2, uInt len));
+    extern void zmemzero OF((Bytef* dest, uInt len));
++#  endif
+ #endif
+ 
+ /* Diagnostic functions */

@@ -1,0 +1,28 @@
+/I option to override install check and install anyway? This would allow images
+to be loaded from within Windows (which has its own MSCDEX).
+
+Problem with XP setup on FreeDOS. Read problem? FreeDOS problem?
+
+/S option to use D:\ via TRUENAME hook? Sharing (what does it do)?
+
+Add a name cache?
+
+Fix potential problem with copyright/abstract/bibliographic filenames?
+  (Doesn't generate tilde, doesn't use Joliet.)
+
+Critical sections?
+
+SHSUCDHD: real-time decompression (LZO)?
+(et al)   allow reads greater 62Ki?
+
+Linux/dosemu locking?
+Writing to hard drive whilst reading from CD? (Redirecting CDBENCH output.)
+
+Multiple buffers/read-ahead?
+ I tested MSCDEX v2.25 with default settings (/M:6?) and /M:1 (rounds to 4?),
+ with SMARTDrive, and SHSUCDX 3.00 beta 1, with SMARTCDX. Two tests were
+ done: bdiffing a 9M file against itself and dir/s/b on a CD with 5135
+ files. The default MSCDEX bdiff was only slightly faster than /M:1 and
+ SHSUCDX (3.30s versus 3.40s). The SHSUCDX dir/s/b was half the time of
+ either MSCDEX (0.62s versus 1.24s). Thus, there doesn't seem to be any
+ advantage to using multiple buffers.

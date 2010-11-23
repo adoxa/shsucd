@@ -1,0 +1,174 @@
+; begin cdrom.inc
+
+; CD Rom types
+%define UNKNOWN 	-1
+%define HIGHSIERRA	24	; the Flags offset
+%define ISO9660 	25
+
+; Device Driver return status codes
+%define DEV_DONE		0x0100
+%define DEV_BUSY		0x0200
+%define DEV_ERROR		0x8000
+%define DE_WPROTECT		0x0000
+%define DE_UNKNOWNUNIT		0x0001
+%define DE_NOTREADY		0x0002
+%define DE_UNKNOWNCMD		0x0003
+%define DE_CRC			0x0004
+%define DE_RHLEN		0x0005
+%define DE_SEEK 		0x0006
+%define DE_MEDIA		0x0007
+%define DE_SECTORNOTFOUND	0x0008
+%define DE_GENERAL		0x000c
+%define DE_INVALIDDISKCHANGE	0x000f
+
+; CD Directory Entry Flags
+%define HIDDEN		0x01
+%define DIR		0x02
+%define ASSOCFILE	0x04
+%define HSEARFMT	0x04	; file has HS ext attrib rcd fmt
+%define RECORD		0x08
+%define PROTECTION	0x10
+%define MULTIEXTENT	0x80	; file has at least one more extent
+
+; ISO & HSC common CD ROM Directory offsets
+%define ExAttroff	 1
+%define Blkoff		 2
+%define Sizeoff 	10
+%define Dateoff 	18
+%define FIDLenoff	32
+%define Nameoff 	33
+
+%define resm(from, to) resb (to - from + 1)	; multi-resb field macro
+
+struc Date_Time
+  .Yr	resb 1	; base 1900
+  .Mth	resb 1	; 1-12
+  .Day	resb 1	; 1-31
+  .Hr	resb 1	; 0-23
+  .Min	resb 1	; 0-59
+  .Sec	resb 1	; 0-59
+endstruc
+
+; ISO9660 description based upon standard
+struc isoVol
+  .Type 		resb	1	; 1
+  .ID			resm(  2,  6)	; "CD001"
+  .Version		resb	1	; 1
+  .Unused1		resb	1	; 00
+  .SysID		resm(  9, 40)	;  32 a chars
+  .VolID		resm( 41, 72)	;  32 d chars
+  .Unused2		resm( 73, 80)	; 00
+  .VolSizeLSB		resd	1
+  .VolSizeMSB		resd	1
+  .Unused3		resm( 89,120)	; 00
+  .SetSizeLSB		resw	1
+  .SetSizeMSB		resw	1
+  .SetSeqLSB		resw	1
+  .SetSeqMSB		resw	1
+  .BlkSizeLSB		resw	1
+  .BlkSizeMSB		resw	1
+  .PathTabSizeLSB	resd	1
+  .PathTabSizeMSB	resd	1
+  .PathTabLocLSB	resd	1
+  .PathTabAltLocLSB	resd	1
+  .PathTabLocMSB	resd	1
+  .PathTabAltLocMSB	resd	1
+  .DirRec		resm(157,190)
+  .VolSetID		resm(191,318)	; 128 d chars
+  .PubID		resm(319,446)	; 128 a chars
+  .PrepID		resm(447,574)	; 128 a chars
+  .AppID		resm(575,702)	; 128 a chars
+  .CopyRightID		resm(703,739)	;  37 d chars
+  .AbstractID		resm(740,776)	;  37 d chars
+  .BiblioID		resm(777,813)	;  37 d chars
+  .CreateDate		resm(814,830)	; YYYYMMDDHHMMSSssZ
+  .ModDate		resm(831,847)	; YYYYMMDDHHMMSSssZ
+  .ExpDate		resm(848,864)	; YYYYMMDDHHMMSSssZ
+  .EffDate		resm(865,881)	; YYYYMMDDHHMMSSssZ
+  .StdVer		resb	1	; 1
+  .Reserved		resb	1	; 00
+endstruc
+
+struc isoDir
+  .RecLen		resb	1
+  .ExAttrRecLen 	resb	1
+  .ExtLocLSB		resd	1
+  .ExtLocMSB		resd	1
+  .DataLenLSB		resd	1
+  .DataLenMSB		resd	1
+  .Date 		resb	Date_Time_size
+  .Offset		resb	1	; -48 to +52, 15 min increments from GMT
+  .Flags		resb	1
+  .FileUnitSize 	resb	1
+  .InterLeave		resb	1
+  .VolSeqNoLSB		resw	1
+  .VolSeqNoMSB		resw	1
+  .FIDLen		resb	1
+  .FileID		resb	1	; d chars
+endstruc
+
+; High Sierria description based upon "Inside the ISO-9660 Filesytem Format",
+;  Jolitz & Jolitz, DDJ, Dec. 1992.
+struc hsVol
+  .LbnLSB		resd	1
+  .LbnMSB		resd	1
+  .Type 		resb	1	; 1
+  .ID			resm( 10, 14)	; "CDROM"
+  .Version		resb	1	; 1
+  .Reserved1		resb	1
+  .SysID		resm( 17, 48)	;  32 a chars
+  .VolID		resm( 49, 80)	;  32 d chars
+  .Reserved2		resm( 81, 88)
+  .VolSizeLSB		resd	1
+  .VolSizeMSB		resd	1
+  .Reserved3		resm( 97,128)
+  .SetSizeLSB		resw	1
+  .SetSizeMSB		resw	1
+  .SetSeqLSB		resw	1
+  .SetSeqMSB		resw	1
+  .BlkSizeLSB		resw	1
+  .BlkSizeMSB		resw	1
+  .PathTabSizeLSB	resd	1
+  .PathTabSizeMSB	resd	1
+  .PathTabLocLSB	resd	1
+  .PathTabAlt1LocLSB	resd	1
+  .PathTabAlt2LocLSB	resd	1
+  .PathTabAlt3LocLSB	resd	1
+  .PathTabLocMSB	resd	1
+  .PathTabAlt1LocMSB	resd	1
+  .PathTabAlt2LocMSB	resd	1
+  .PathTabAlt3LocMSB	resd	1
+  .DirRec		resm(181,214)
+  .VolSetID		resm(215,342)	; 128 d chars
+  .PubID		resm(343,470)	; 128 a chars
+  .PrepID		resm(471,598)	; 128 a chars
+  .AppID		resm(599,726)	; 128 a chars
+  .CopyRightID		resm(727,758)	;   32 d chars
+  .AbstractID		resm(759,790)	;   32 d chars
+  .CreateDate		resm(791,806)	; YYYYMMDDHHMMSSss
+  .ModDate		resm(807,822)	; YYYYMMDDHHMMSSss
+  .ExpDate		resm(823,838)	; YYYYMMDDHHMMSSss
+  .EffDate		resm(839,854)	; YYYYMMDDHHMMSSss
+  .StdVer		resb	1
+  .Reserved4		resb	1	; 00
+endstruc
+
+struc hsDir
+  .RecLen		resb	1
+  .ExtRecLen		resb	1
+  .ExtLocLSB		resd	1
+  .ExtLocMSB		resd	1
+  .DataLenLSB		resd	1
+  .DataLenMSB		resd	1
+  .Date 		resb	Date_Time_size
+  .Flags		resb	1
+  .Reserved1		resb	1
+  .InterLeave		resb	1
+  .SkipFactor		resb	1
+  .VolSeqNoLSB		resw	1
+  .VolSeqNoMSB		resw	1
+  .FIDLen		resb	1
+  .FileID		resb	1
+endstruc
+
+; end cdrom.h

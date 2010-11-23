@@ -1,0 +1,1192 @@
+;
+;****************************************************************************
+;
+; SHSUCDRD Version 1.00
+; Jason Hood, March to May 2005.
+; jadoxa@yahoo.com.au
+; http://shsucdx.adoxa.cjb.net/
+;
+; A RAM (XMS) version of SHSUCDHD, supporting gzipped images.
+;
+;****************************************************************************
+;
+
+;%define i8086		; If defined no 386 instructions will be used.
+%define GUNZIP		; If defined gzipped images can be read.
+
+%include "nasm.mac"
+
+%ifdef i8086
+	cpu	286	; Minimum 286 required for XMS
+%else
+	cpu	386
+%endif
+
+struc rh
+  .Length		resb	1	; header size in bytes
+  .Unit 		resb	1	; CD drive unit
+  .Command		resb	1	; device command code
+  .Status		resw	1	; device command status
+  .Reserved		resb	8
+endstruc
+
+struc rhIOCTL
+			resb	rh_size ; RH common
+  .MediaDesc		resb	1
+  .CBPtr		resd	1
+  .BytesToTransfer	resw	1
+  .StartSector		resw	1
+  .VolIdPtr		resd	1
+endstruc
+
+struc rhTransfer
+			resb	rh_size ; RH common
+			resb	1
+  .DtaPtr		resd	1
+  .SectorCount		resw	1
+  .StartSector		resd	1
+  .ReadMode		resb	1	; we support cooked mode only
+			resb	1
+			resb	1
+endstruc
+
+rhcmdIOCTL_In		equ	03h
+rhcmdOpen		equ	0Dh
+rhcmdClose		equ	0Eh
+rhcmdReadLong		equ	80h
+
+IOCtl_In_RDHACmd	equ	 0
+IOCtl_ReadDriveBytes	equ	 5
+IOCtl_DevStatCmd	equ	 6
+IOCtl_ReturnSectorSize	equ	 7
+IOCtl_ReturnVolumeSize	equ	 8	; total sectors on disk
+IOCtl_MediaChangedCmd	equ	 9
+IOCtl_AudioDiskInfo	equ	10
+IOCtl_AudioTrackInfo	equ	11
+IOCtl_AudioStatusInfo	equ	15
+
+MediaChanged_No 	equ	 1
+MediaChanged_Yes	equ	-1
+MediaChanged_DontKnow	equ	 0
+
+DeviceError		equ	8000h
+DeviceDone		equ	0100h
+DE_UnknownUnit		equ	  01h	; OR these with DeviceError
+DE_DeviceNotReady	equ	  02h
+DE_UnknownCommand	equ	  03h
+DE_SectorNotFound	equ	  08h
+DE_ReadError		equ	  0Bh
+
+DriveNormalReady	equ	0
+; Door closed, door locked, supports only cooked reading, read only,
+; data read only, no interleaving, (reserved), no prefetching,
+; no audio channel manipulation, supports HSG addressing mode (not Red Book).
+
+
+SectorSize		equ	2048	; make it an EQU so we don't change it
+SectorShift		equ	11
+
+
+struc DriveEntry
+  .VolSize		resd	1	; this order is assumed
+  .Handle		resw	1
+endstruc
+
+
+segment _TEXT class=CODE
+segment _DATA class=DATA
+segment _BSS class=BSS align=16
+
+group DGROUP _TEXT _DATA _BSS
+
+segment _TEXT
+
+
+; DOS device header with CDROM extension fields
+; DO NOT MAKE THE DEVICE DRIVER NAME THE SAME AS THE FILE NAME
+
+CDRDHdr
+  NextDriver	dd	-1
+		dw	0C800h		; attributes for a CDROM
+		dw	Strategy
+		dw	Interrupt
+  DeviceName	db	'SHSU-CDR'
+		dw	0		; CDROM reserved
+		db	0		; CDROM drive letter
+  Units 	db	0		; number of CD drives on this device
+
+rhAddr		dd	0
+
+EMM
+  bytes 	dd	0
+  srch		dw	0
+  srco		dw	0, _BSS
+  dsth		dw	0
+  dsto		dd	0
+
+
+; Use BP to access variables, since it's shorter than direct memory access
+; (one byte for displacement, instead of two bytes for address).
+%define BP_(var) bp+var-CDRDHdr
+
+
+; Make the IOCtl cases a little easier to read (NOT a general purpose case).
+%macro Case 1.nolist
+  %ifctx case
+    %$not:
+    %pop
+  %endif
+  %push case
+	loop	%$not
+%endmacro
+%macro ECase 1.nolist
+  %$not:
+  %pop
+	sub	cl, %1 - IOCtl_AudioTrackInfo
+	jne	.err
+%endmacro
+
+
+;************************************************************************
+;* Driver Strategy routine
+;************************************************************************
+
+Strategy
+	; ES:BX contains request header pointer, save it.
+	ses	bx, cs:rhAddr
+	retf
+
+
+;************************************************************************
+;* Driver Interrupt routine
+;************************************************************************
+
+Interrupt
+	pushf
+	savea	ds,es
+%ifdef i8086
+	save	bp
+%else
+	save	eax
+%endif
+	cld
+
+	zero	bp ; = CDRDHdr
+
+	; process command
+	lds	bx, [cs:BP_(rhAddr)]	; make sure we have RH addr
+	mov	al, [bx+rh.Unit]
+	cmp	al, i(iUnits)
+iUnits ib
+	jae	.unk
+
+	mov	cx, DriveEntry_size	; CH = 0
+	mov	si, Drive
+	mul	cl			; AH = 0
+	add	si, ax
+	mov	al, [bx+rh.Command]
+
+	sub	al, rhcmdIOCTL_In
+	if e
+	 les	di, [bx+rhIOCTL.CBPtr]
+	 mov	cl, [es:di]		; 1st byte of DTA is subcommand
+	 inc	di			; address of buffer
+
+	 jcxz	.RDHACmd
+
+	 sub	cl, IOCtl_ReadDriveBytes
+	 je	.stb			; no bytes read
+
+	 Case IOCtl_DevStatCmd
+.stw2:	  stosw 			; status is 0
+.stw:	  stosw
+	  jmp	.done
+
+	 Case IOCtl_ReturnSectorSize
+	  stosb 			; force cooked mode
+	  mov	ah, SectorSize >> 8	; low byte is 0
+	  jmp	.stw
+
+.RDHACmd:
+	  stosw 			; CDRDHdr = 0
+	  mov	ax, cs
+	  jmp	.stw
+
+	 Case IOCtl_ReturnVolumeSize
+%ifdef i8086
+	  cs movsw			; DriveEntry.VolSize
+	  cs movsw
+%else
+	  cs movsd
+%endif
+	  jmp	.done
+
+	 Case IOCtl_MediaChangedCmd
+	  inc	ax ;MediaChanged_No
+.stb:	  stosb
+.done:	  zero	ax
+	  jmp	.ddone
+
+	 Case IOCtl_AudioDiskInfo
+	  stosw 			; first and last track numbers
+	  mov	ah, 2			; lead-out track at 00:02:00
+	  jmp	.stw2
+
+	 Case IOCtl_AudioTrackInfo
+	  stosb 			; force track 0
+	  mov	ah, 2
+	  stosw 			; track starts at 00:02:00
+	  stosw
+	  mov	al, 01100000b		; data track, digital copy permitted
+	  jmp	.stb
+
+	 ECase IOCtl_AudioStatusInfo
+	  stosw 			; not paused
+	  stosw 			; starting location
+	  stosw
+	  jmp	.stw2			; ending location
+
+.unk:	 mov	al, DE_UnknownUnit
+	 db	0b9h			; MOV CX, nnnn
+.err:	 mov	al, DE_UnknownCommand
+	 jmp	.erxit
+	fi
+
+	sub	al, rhcmdOpen - rhcmdIOCTL_In
+	je	.ddone
+	dec	ax ;rhcmdClose
+	je	.ddone
+
+	cmp	al, rhcmdReadLong - rhcmdClose
+	jne	.err
+	; Limit read to 62Ki.
+	mov	ax, [bx+rhTransfer.SectorCount]
+	if ax ,a, 31
+	 mov	ax, 31
+	 mov	[bx+rhTransfer.SectorCount], ax
+	fi
+	shl	ax, SectorShift
+	jz	.ddone
+	mov	[cs:bytes], ax
+	mmovd	cs:BP_(dsto), bx+rhTransfer.DtaPtr
+	save	ds
+	 call	ReadImage
+	restore
+	if nz
+	 zerow	[bx+rhTransfer.SectorCount]
+.erxit:  mov	ah, DeviceError >> 8
+	fi
+
+.ddone: or	ax, DeviceDone
+	mov	[bx+rh.Status], ax
+
+	restore
+	restore
+	popf
+	retf
+
+
+;+
+; FUNCTION : ReadImage
+;
+;	Read the sectors from XMS.
+;
+; Parameters:
+;	SI -> drive entry
+;	BX -> request header
+;
+; Returns:
+;	AL := 0 for all bytes read (and ZR)
+;	      device error code otherwise (and NZ)
+;
+; Destroys:
+;
+;-
+ReadImage
+	ldd	bx+rhTransfer.StartSector
+	ld	ds, cs
+	mov	cx, [si+DriveEntry.Handle]
+	mov	si, EMM
+	mov	[si+4], cx		; srch
+%ifdef i8086
+	repeat	3
+	 shl	ax, 1
+	 rcl	dx, 1
+	next
+	mov	[si+6+1], ax		; srco
+	mov	[si+6+3], dl
+%else
+	shl	eax, SectorShift
+	mov	[si+6], eax
+%endif
+	mov	ah, 0bh
+	icallf	xms
+	ibit	al, 0			; 0 -> 1 failed, 1 -> 0 succeeded
+	shl	al, 3			; DE_SectorNotFound
+	ret
+
+
+Drive	; overwites the help screen
+
+
+;============================================================================
+;  everything below this line is discarded after installing the driver
+
+CopyrightMsg
+dln "SHSUCDRD by Jason Hood <jadoxa@yahoo.com.au>."
+dln "Version 1.00 (28 May, 2005). Freeware."
+dln "http://shsucdx.adoxa.cjb.net/"
+
+CRLF dlz
+
+HelpMsg
+dln "Simulate a CD-ROM using an image file in memory."
+dln
+dln "SHSUCDRD /F:[?]imagefilename... [/C] [/V] [/U] [/Q[Q]]"
+dln
+dln "   imagefilename  Standard .ISO file (generated by OMI, mkisofs, etc)."
+dln "                     '?' will ignore an invalid image."
+%ifdef GUNZIP
+dln "                     The image may have been compressed with gzip."
+%endif
+dln "   /C             Use conventional memory instead of loading high."
+dln "   /V             Display memory usage (only at install)."
+dln "   /U             Unload."
+dln "   /Q             Quiet - don't display sign-on banner."
+dln "   /QQ            Really quiet - don't display anything."
+dln
+dlz "The name of the device driver is SHSU-CDR."
+
+%define ln 13,10
+%define ht 9
+
+%ifdef i8086
+WrongCPUMsg		dlz "Must have at least a 286."
+%else
+WrongCPUMsg		dlz "Must have at least a 386."
+WrongXMSMsg		dlz "Must have XMS v3."
+%endif
+WrongDOSMsg		dlz "Must be DOS 3.3 or later."
+NoXMSMsg		dlz "XMS driver not found."
+
+InstallMsg		dlz ln,"SHSU-CDR CD image driver installed."
+UnInstallMsg		dlz ln,"SHSUCDRD uninstalled and memory freed."
+CouldNotRemoveMsg	dlz ln,"SHSUCDRD can't uninstall."
+NotInstalledMsg 	dlz ln,"SHSUCDRD not installed."
+FileNotFoundMsg 	dlz ht,": failed to open"
+InvalidImageFileMsg	dlz ht,": unrecognized image"
+ImageTooBigMsg		dlz ht,": too big for memory"
+UnitMsg 		dlz ht,": Unit /" ; assume no more than 10 units
+UnitDigit		equ $-4-UnitMsg
+
+MemoryUsage		dln
+			dz  "Memory Usage"
+MemoryHigh		dlz		" (loaded high)"
+MemoryBytes		db  "  Static:  "
+MemoryStatic		dln	       "00000 bytes"
+			db  "  Dynamic: "
+MemoryDynamic		dln	       "00000 bytes"
+			db  "  Total:   "
+MemoryTotal		dln	       "00000 bytes"
+			db  "  XMS:     "
+MemoryXMS		dlz	       "00000 kibibytes"
+
+
+ArgumentNotFound        EQU     2       ; Unrecognized argument
+NoArgumentsFound        EQU     1       ; No argument in command line
+ArgumentFound           EQU     0       ; Ok argument in command line
+
+DOffset 		dw	Drive
+XMSsize 		dd	0
+
+Quiet			dflg	off
+Silent			dflg	off
+Verbose 		dflg	off
+Ignore			dflg	off
+Reloc			dflg	on
+
+Progress		dz	8,8,8, "000"    ; let's assume < 1000MiB
+
+%ifdef GUNZIP
+  %define		BUFSIZE 16384	; had some problems using 32768
+  %define		Mi	64
+  extern		_gz_open, _gz_read, _gz_close
+%else
+  %define		BUFSIZE 32768
+  %define		Mi	32
+  %define		FName	buf
+%endif
+
+segment _BSS
+buf			resb	BUFSIZE ; buffer expected at XXXX:0000
+PSP			resw	1
+ResSeg			resw	1
+%ifdef GUNZIP
+FName			resb	128
+type			resw	1	; 0 = gzip, 1 = iso
+%endif
+
+segment _TEXT
+
+
+;+
+; FUNCTION : MsgOut
+;
+;	Output a NUL-terminated string.
+;
+; Parameters:
+;	SI -> message
+;
+; Returns:
+;	Nothing.
+;
+; Destroys:
+;	AX,DL,SI
+;-
+MsgOut
+	retif	[Silent]
+	mov	ah, 02h 		; display ch function
+	when
+	 prch.	al
+	while
+	 lodsb
+	is al nzr
+	return
+
+%macro Output 0-1.nolist
+  %if %0 == 1
+	mov	si, %1
+  %endif
+	call	MsgOut
+%endmacro
+
+
+Wrong:	Output
+Dont:	mov	si, NotInstalledMsg
+Xit:	Output
+	exit	1
+RC	equ	$-4
+
+
+;+
+; FUNCTION : Entry point
+;-
+..start
+	mov	ax, cs
+	mov	ds, ax
+	mov	ss, ax
+	mov	sp, stacktop wrt DGROUP
+	mov	[PSP], es
+	cld
+
+	; check processor. Based on code by Henrik Haftmann.
+	cpu	8086
+	mov	si, WrongCPUMsg
+	push	sp			; Check for 80286
+	pop	ax
+	jif	ax ,ne, sp, Xit
+%ifdef i8086
+	cpu	286
+%else
+	pushf				; Now check for 386
+	pop	ax
+	or	ax, 7000h
+	push	ax
+	popf
+	pushf
+	pop	ax
+	jif	ax ,&!, 7000h, Xit
+	cpu	386
+%endif
+
+	; get DOS version
+	mov	si, WrongDOSMsg
+	dos	30h
+	jif	{al ,b, 3} OR e AND {ah ,b, 10}, Xit
+
+	; get the XMS driver address
+	mov	si, NoXMSMsg
+	mov	bx, -1
+	mpx	4310h
+	inc	bx
+	jz	Xit
+	dec	bx
+	sthl	es,bx, xms
+
+%ifndef i8086
+	; check for v3
+	mov	ah, 0
+	call	far [xms]
+	mov	si, WrongXMSMsg
+	jif	ah ,b, 3, Wrong
+%endif
+
+	mov	es, [PSP]
+	mov	al, 'Q'                 ; /Q quiet
+	call	GetParm
+	if al ,e, ArgumentFound
+	 sflg.	[Quiet]
+	 mov	al, [es:di+1]
+	 cbit	al, 5
+	 if. {al ,e, 'Q'}, sflg. [Silent]
+	fi
+
+	mov	al, 'U'                 ; /U uninstall driver
+	call	GetParm
+	jif	al ,e, ArgumentFound, UnInstallCDRD
+
+	ifnflg	[Quiet], \
+	 Output CopyrightMsg
+
+	mov	al, '?'                 ; /? help
+	call	GetParm
+	if al ,e, {ArgumentFound, NoArgumentsFound}
+	 mov	si, HelpMsg
+	 mov	[RC], ch		; CH zero from command line length
+	 jmp	Xit
+	fi
+
+	mov	al, 'C'                 ; /C "conventional" memory
+	call	GetParm
+	if. {al ,e, ArgumentFound}, \
+	 cflg.	[Reloc]
+
+	mov	al, 'V'                 ; /V display memory usage
+	call	GetParm
+	if. {al ,e, ArgumentFound}, \
+	 sflg.	[Verbose]
+
+	mov	di, 80h 		; command line length at PSP +80h
+	movzx.	cx, [es:di]
+	while
+	 mov	al, 'F'                 ; /F:filename
+	 call	FindParm
+	is al ,e, ArgumentFound
+	 call	MoveName
+	 save	es,di,cx
+
+	 ; canonicalize and display filename
+	 mov	si, FName
+	 ld	es, ds
+	 mov	di, buf+128
+	 dos	60h
+	 Output di
+
+	 ; open the file, see if it's a valid image
+	 mov	si, FileNotFoundMsg
+%ifdef GUNZIP
+	 push	FName
+	 call	_gz_open
+	 pop	cx
+	 isz	ax
+	 js	.noimg
+	 mov	si, InvalidImageFileMsg
+	 mov	[type], ax
+	 push	BUFSIZE
+	 push	buf
+	 call	_gz_read	; sectors 0-7
+	 call	_gz_read	; sectors 8-15
+	 pop	ax
+	 pop	cx
+	 push	SectorSize
+	 push	ax
+	 call	_gz_read	; sector 16
+	 save	ax
+	  call	_gz_close
+	 restore
+	 pop	cx
+	 pop	cx
+%else
+	 mov	dx, FName
+	 dos	3dc0h		; read only, deny none, private
+	 jc	.noimg
+	 mov	si, InvalidImageFileMsg
+	 ; read sector 16 (PVD)
+	 zero	cx
+	 mov	dx, 16 * SectorSize
+	 xchg	bx, ax
+	 dos	4200h
+	 mov	dx, buf
+	 mov	cx, SectorSize
+	 dos	3fh
+	 jc	.cls
+%endif
+	 if ax ,e, cx
+	  ; see if we have the ISO or HS signatures
+	  ifw {[buf+1] ,e, 'CD'} AND {word [buf+3] ,e, '00'} ; '1'
+	   ; found ISO, position the volume offset
+	   mov	di, buf+80
+	  elifw {[buf+9] ,e, 'CD'} AND {word [buf+11] ,e, 'RO'} ; 'M'
+	   ; found HS, position the volume offset
+	   mov	di, buf+88
+	  fi
+	 andif e
+%ifdef GUNZIP
+	  mov	dx, FName
+	  dos	3dc0h
+	  xchg	bx, ax
+	  zero	cx
+	  ifw [type] ,e, 1
+	   zero dx
+	   dos	4202h
+	  else
+	   dec	cx			; original file size
+	   mov	dx, -4			;  is last four bytes
+	   dos	4202h
+	   mov	dx, buf
+	   mov	cx, 4
+	   dos	3fh
+	   ldhl dx,ax, buf
+	  fi
+	  save	ax
+	   dos	3eh
+	  restore
+	  zero	cx
+%else
+	  zero	cx			; get file size
+	  zero	dx
+	  dos	4202h
+%endif
+	  mov	si, ImageTooBigMsg
+%ifdef i8086
+	 andif dh ,b, 4 		; only less than 64Mi allowed
+	  add	ax, 1023		; ensure file is multiple of 1Ki
+	  adc	dx, cx
+	  shr	dx, 1
+	  rcr	ax, 1
+	  shr	dx, 1
+	  rcr	ax, 1
+	  mov	dh, dl
+	  mov	dl, ah
+	  mov	ah, 9			; allocate XM
+	  push	cx
+	  push	dx
+%else
+	  ld	edx, dx,ax
+	  add	edx, 1023
+	  shr	edx, 10
+	  mov	ah, 89h
+	  push	edx
+%endif
+	  save bx
+	   call far [xms]
+	  restore
+	  dec	ax
+	  pop	cx
+	  pop	ax
+	 andif z
+	  add	[XMSsize],   cx
+	  adc	[XMSsize+2], ax
+	  mov	si, [DOffset]
+	  mov	[dsth], dx
+	  mov	[si+DriveEntry.Handle], dx
+	  save ax
+	   mmovd si+DriveEntry.VolSize, di
+	  restore
+	  call	CopyImage
+	  addw	[DOffset], DriveEntry_size
+	  incb	[Units]
+	  incb	[iUnits]
+	  mov	si, UnitMsg
+	  incb	[si+UnitDigit]
+	 fi
+%ifndef GUNZIP
+.cls:	 dos	3eh
+%endif
+	 if si ,ne, UnitMsg
+.noimg:   cmovby {!,[Ignore]}, [Units], -128
+	 fi
+	 Output
+	 restore
+	wend
+
+	jifb	[Units] ,le, 0, Dont
+
+	zerow	[dsth]		; reset destination back to normal memory
+	mov	cx, [DOffset]
+	call	Link
+
+	ifflg	[Verbose], call DisplayMemory
+
+	Output	InstallMsg
+
+	ifflg	[Reloc], exit 0
+
+	mov	ds, [PSP]
+	zero	ax
+	xchg	ax, [2Ch]		; find environment and release it
+	mov	es, ax
+	dos	49h
+
+	mov	dx, [cs:DOffset]
+	add	dx, 4fh 		; first 40h bytes of PSP and rounding
+	mov	cl, 4
+	shr	dx, cl			; para to keep
+
+	dos	3100h			; stay resident and exit
+
+
+;+
+; FUNCTION : Link
+;
+;	Link the driver into the device chain and relocate.
+;
+; Parameters:
+;	CX := number of bytes to relocate
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+Link
+	dos	5200h			; get list of list
+	add	bx, 22h 		; ES:BX[22] is NUL device header
+	mmovd	NextDriver, es:bx	; put NUL.next in our header
+
+	ifflg	[Reloc]
+	 save	es,bx
+	 dos	5802h			; get current UMB state
+	 push	ax			; save it
+	 dos	5800h			; get current allocation strategy
+	 push	ax			; save it
+	  mov	bx, 1			; link in UMB
+	  dos	5803h
+	  cmpw	[PSP], 0A000h		; already high?
+	  cmov	bl, b, 80h, 0		; high or low memory, first fit
+	  dos	5801h
+	  mov	bx, [DOffset]
+	  add	bx, 15			; paragraph rounding
+	  shr	bx, 4			; bytes to paras
+	  dos	48h
+	  pushf
+	  if nc
+	   mov	[ResSeg], ax
+	   dec	ax			; MCB of TSR
+	   mov	es, ax
+	   inc	ax
+	   mov	[es:1], ax		; make it own itself
+	   save ds
+	    mov ax, [PSP]
+	    dec ax			; MCB of installer
+	    mov ds, ax
+	    mov si, 8			; copy the MCB name
+	    mov di, si
+	    times 4 movsw
+	   restore
+	  fi
+	  pop	dx
+	 pop	bx			; restore allocation strategy
+	 dos	5801h
+	 pop	bx			; restore UMB state
+	 dos	5803h
+	 restore
+	 mov	ax, [ResSeg]
+	 shr	dl, 1
+	 jnc	.ok
+	fi
+	cflg	[Reloc]
+	mov	ax, [PSP]
+	add	ax, 4
+	mov	[ResSeg], ax
+
+.ok:	zero	si ; = DVHDHdr
+	sthl	ax,si, es:bx		; point NUL header at us
+
+	; relocate into the PSP/allocated memory
+	mov	es, ax
+	zero	di
+	rep	movsb
+	ret
+
+
+;+
+; FUNCTION : UnInstallCDRD
+;
+;	Remove the driver from the device chain and free the memory.
+;
+; Parameters:
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+UnInstallCDRD
+	dos	5200h			; get list of list
+	add	bx, 22h 		; ES:BX[22] is NUL (1st) device header
+	repeat
+	 ses	bx, buf 		; save current header addr
+	 les	bx, [es:bx]		; load next header addr into ES:BX
+	 inc	bx			; end of drivers?
+	 jz	.DriverNotFound
+	 dec	bx
+	 mov	cx, 8
+	 mov	si, DeviceName		; DS:SI is our device name
+	 lea	di, [bx+si]		; ES:DI is chained device name
+	 repe	cmpsb			; if eq it's the one we are looking for
+	until e
+	push	es
+	save	ds
+	 ld	ds, es			; ES:BX is addr of driver being removed
+	 mov	si, bx			; put it into DS:SI
+	 les	di, [cs:buf]		; previous header now in ES:DI
+	 times 2 movsw			; move address DS:SI -> ES:DI
+	 movzx. cx, [Units]		; free each XMS handle
+	 for	si, Drive+DriveEntry.Handle, *,, DriveEntry_size
+	  mov	dx, [si]
+	  mov	ah, 10
+	  call	far [xms]
+	 next
+	restore
+	pop	ax
+	sub	ax, 4			; locate the PSP of installed driver
+	mov	es, ax			;
+	ifw [es:0] ,ne, 20cdh		; PSP signature?
+	 add	ax, 4			; no, point back to driver
+	 mov	es, ax			;
+	fi				;
+	dos	49h			; free memory
+
+	mov	si, UnInstallMsg
+	zerob	[RC]
+	jmp	Xit
+
+.DriverNotFound:
+	mov	si, CouldNotRemoveMsg
+	jmp	Xit
+
+
+;+
+; FUNCTION : CopyImage
+;
+;	Copy the image from file to memory.
+;
+; Parameters:
+;	BX     := file handle
+;	[dsth] := XMS handle
+;	AX:CX  := size of image in KiB
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+CopyImage
+	shr	ax, 1			; convert Ki to Mi
+	rcr	cx, 1
+	shr	ax, 1
+	rcr	cx, 1
+	mov	ah, al
+	mov	al, ch
+	mov	si, Progress+3
+	mov	cx, 3
+	call	itoan
+	prch	' '
+	Output	Progress+3		; display mebibytes countdown
+
+	mov	si, EMM
+	mov	di, Mi			; update count every MiB
+	zerow	[dsto]			; reset destination offset
+	zerow	[dsto+2]
+%ifdef GUNZIP
+	push	FName
+	call	_gz_open
+	pop	cx
+	push	BUFSIZE
+	push	buf
+	while
+	 call	_gz_read
+	 isz	ax
+	 break	le
+%else
+	zero	cx			; rewind the file
+	zero	dx
+	dos	4200h
+	mov	cx, BUFSIZE
+	mov	dx, buf
+	while
+	 dos	3fh
+	 break	ax zr
+%endif
+	 dec	ax			; XMS requires even number of bytes
+	 or	al, 1			; (which it should be, but maybe
+	 inc	ax			;  the image has been truncated)
+	 mov	[bytes], ax
+	 dec	di
+	 if z
+	  save	dx,si
+	   mov	si, Progress
+	   decb [si+5]
+	   ifb	[si+5] ,b, '0'
+	    movb [si+5], '9'
+	    decb [si+4]
+	    ifb [si+4] ,e, '0'
+	     ifb. {[si+3] ,e, ' '}, movb [si+4], ' '
+	    elif b
+	     movb [si+4], '9'
+	     decb [si+3]
+	     ifb. {[si+3] ,e, '0'}, movb [si+3], ' '
+	    fi
+	   fi
+	   Output
+	  restore
+	  mov	di, Mi
+	 fi
+	 mov	ah, 0bh
+	 call	far [xms]
+	 addw	[dsto],   BUFSIZE
+	 adcw	[dsto+2], 0
+	wend
+
+%ifdef GUNZIP
+	pop	cx
+	pop	cx
+	call	_gz_close
+%endif
+
+	prch	8
+	prch.
+	prch.
+	prch.
+	ret
+
+
+;+
+; FUNCTION : DisplayMemory
+;
+;	Display the memory usage.
+;
+; Parameters:
+;	[DOffset] := last byte
+;	[XMSsize] := size of allocated XMS (in KiB)
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+DisplayMemory
+	Output	MemoryUsage
+	cmov	si, {word [ResSeg], ae, 0A000h}, MemoryHigh, CRLF
+	Output
+	mov	ax, [DOffset]
+	ifnflg	[Reloc], \
+	 add	ax, 40h 		; PSP
+	dec	ax			; round
+	or	al, 15			;  to
+	inc	ax			;   paragraph
+	mov	si, MemoryTotal
+	mov	bx, ax
+	call	itoa
+	cmov	ax, [Reloc], Drive, 40h + Drive
+	mov	si, MemoryStatic
+	sub	bx, ax
+	call	itoa
+	xchg	ax, bx
+	mov	si, MemoryDynamic
+	call	itoa
+	mov	si, MemoryXMS
+	mov	ax, [XMSsize]
+	ifnzw	[XMSsize+2]		; if smaller than 64MiB display as KiB
+	 repeat 10			; otherwise as MiB
+	  shrw	[XMSsize+2], 1
+	  rcr	ax, 1
+	 next
+	 movw	[si+6], 'me'
+	fi
+	call	itoa
+	Output	MemoryBytes
+	ret
+
+
+;+
+; FUNCTION : itoa
+;
+;	Convert a binary number to a space-padded string.
+;
+; Parameters:
+;	AX := number
+;	SI -> buffer
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+itoa
+	mov	cx, 5
+itoan
+	for	si,,*,,+		; fill with spaces
+	 movb	[si], ' '
+	next
+	mov	cl, 10			; base
+	do
+	 zero	dx
+	 div	cx
+	 dec	si
+	 add	dl, '0'
+	 mov	[si], dl
+	while ax nzr
+	ret
+
+
+;+
+; FUNCTION : MoveName
+;
+;	Copy the image filename from the command line to local storage
+;	and NUL-terminate it.
+;
+; Parameters:
+;	ES:DI -> name
+;	   CX := length of command line
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+MoveName
+	mov	si, FName
+	cflg	[Ignore]
+	ifb [es:di] ,e, '?'
+	 sflg.	[Ignore]
+	 inc	di
+	 dec	cx
+	fi
+	repeat0
+	 mov	al, [es:di]
+	 break	al ,e, {' ','/'}
+	 mov	[si], al
+	 inc	si
+	 inc	di
+	next
+	dec	di
+	mov	[si], ch
+	ret
+
+
+;+
+; FUNCTION : FindParm
+;
+;	Search the command line for a parameter with value.
+;
+; Parameters:
+;	   AL := parameter code we are to find ("/X:" or "-X:")
+;	ES:DI -> *before* first character on command line
+;	   CX := number of characters left on command line
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+FindParm
+	repeat				; this code allows us to handle names
+	 call	GetNextParm		; like -C:NET-CD
+	 retif	al ,ne, ArgumentFound
+	 inc	di			; found /X or -X, is next char a ':' ?
+	 dec	cx
+	 jifb	[es:di] ,e, ':', .FoundIt
+	next
+	mov	al, ArgumentNotFound
+	return
+
+.FoundIt:
+	inc	di			; /X:name  make DI point @ name
+	dec	cx
+	mov	al, ArgumentFound
+	ret
+
+
+;+
+; FUNCTION : GetParm, GetNextParm
+;
+;	Scans command line for argument of form /X or -X where
+;	X = specified ASCII character. Presumes that argument is preceded
+;	by a '/' or a '-'. Comparisons are case insensitive.
+;
+; Parameters:
+;	   AL := parameter character to scan for
+;	ES:DI -> address of command line, less one (GetNextParm only)
+;	   CX := command line length (GetNextParm only)
+;
+; Returns:
+;	   AL := one of the following codes:
+;		   NoArgumentsFound if empty command line
+;		   ArgumentFound if argument found
+;		   ArgumentNotFound if argument not as specified
+;	ES:DI -> pointer to found argument
+;	   CX := chars left on command line including arg
+;
+; Destroys:
+;-
+GetParm
+	mov	di, 80h 		; command line length PSP +80h
+	movzx.	cx, [es:di]
+
+GetNextParm
+	mov	ah, NoArgumentsFound	; assume no /X style arguments
+	retif	cxz
+	;if. {al ,[], 'a','z'}, cbit al, 5 ; Make character upper case
+
+	; Find start of argument
+	repeat
+	 inc	di
+	 mov	dl, [es:di]		; Get character from argument list
+	 if dl ,e, {'/','-'}            ; Found option prefix
+	  inc	di
+	  dec	cx
+	  retif z
+	  mov	ah, ArgumentFound	; Assume argument is okay
+	  mov	dl, [es:di]
+	  if. {dl ,[], 'a','z'}, cbit dl, 5
+	  retif dl ,e, al		; specified char
+	  mov	ah, ArgumentNotFound	; Else signal bad argument
+	 fi
+	next
+.ret:	mov	al, ah
+	ret
+
+
+; Supply Borland's long shift functions.
+global N_LXURSH@, N_LXLSH@
+
+N_LXURSH@
+	if cl ,b, 16
+	 mov	bx, dx
+	 shr	ax, cl
+	 shr	dx, cl
+	 neg	cl
+	 add	cl, 16
+	 shl	bx, cl
+	 or	ax, bx
+	 ret
+	fi
+	sub	cl, 16
+	xchg	dx, ax
+	zero	dx
+	shr	ax, cl
+	ret
+
+N_LXLSH@
+	if cl ,b, 16
+	 mov	bx, ax
+	 shl	ax, cl
+	 shl	dx, cl
+	 neg	cl
+	 add	cl, 16
+	 shr	bx, cl
+	 or	dx, bx
+	 ret
+	fi
+	sub	cl, 16
+	xchg	dx, ax
+	zero	ax
+	shl	dx, cl
+	ret
+
+
+segment _STACK stack class=STACK
+	resw	128
+stacktop

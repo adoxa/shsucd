@@ -1,0 +1,178 @@
+;begin undoc.mac
+;
+; revised March 1, 1994
+;
+; jmh 030602 - added VARBLKSIZE conditional to force use of variable block
+;	       sizes; use a fixed 2K if not defined.
+; jmh 040802 - converted to NASM, added stuff from redir.h.
+; jmh 041112 - added CDROOT conditional to use \\D.\A. form.
+; jmh 041117 - removed VARBLKSIZE
+
+;%define CDROOT
+
+;
+;   various useful DOS structures
+
+; List of Lists
+struc LoL
+		resd	 1
+  .CurSFT	resd	 1
+		resd	 1
+		resd	 1
+		resw	 1
+		resd	 1
+  .CDS		resd	 1
+		resd	 1
+		resw	 1
+		resb	 1
+  .LastDrive	resb	 1
+endstruc
+
+; Current Directory Structure
+struc CDS
+  .CurrPath	resb	67
+  .Flags	resw	 1
+		resd	 1
+  .Redir	resd	 1
+		resw	 1
+  .RootOff	resw	 1
+endstruc
+
+; Offsets in the CDS File Name
+%ifdef CDROOT
+  %define DriveOff	 2
+  %define RootSlashOff	 7
+%else
+  %define DriveOff	 0
+  %define RootSlashOff	 2
+%endif
+
+; System File Table
+struc SFT
+  .RefCnt	resw	 1		; Reference count
+  .Mode 	resw	 1		; Open Mode
+  .DirAttrib	resb	 1
+  .Flags	resw	 1
+  .DCB		resd	 1		; Device control block
+  .Cluster	resw	 1		; Initial cluster
+  .HHMMSS	resw	 1		; Hour, Min, Sec/2
+  .YYMMDD	resw	 1		; Year, Month, Day
+  .FilSiz	resd	 1		; file size/EOF location
+  .FilPos	resd	 1		; Current file position
+  ;.RelClstr	resw	 1		; clusters from beginning
+  ;.CurClstr	resw	 1		; current cluster
+  ;.LBN 	resw	 1		; block number
+  .FBN		resd	 1		; first block of file extent
+  .Owner	resw	 1
+  .DirIndex	resb	 1		; directory index
+  .Name 	resb	11		; file name
+  .Unknown	resb	 4
+  .OwnerMach	resw	 1		; machine number of owner
+  .OwnerPSP	resw	 1		; psp of owner task
+  .Status	resw	 1
+endstruc
+
+; DOS Search Data Block
+struc SDB
+  .DriveLet	resb	 1		; Drive Letter
+  .TemPlate	resb	11		; Search template
+  .SAttr	resb	 1		; Search attribute
+  .Entry	resw	 1		; Entry Count within dir
+  .ParentBlk	resd	 1		; Blk # of start of parent
+  .ParentSize	resw	 1		; Size of parent, in blocks
+endstruc
+
+; DOS Found Data Block
+struc FDB
+  .FName	resb	11		; Found Filename
+  .Fattr	resb	 1		; Attr of found file
+  .Reserved	resb	10
+  .FTime	resd	 1
+  .Cluster	resw	 1
+  .FSize	resd	 1
+endstruc
+
+; These are really documented.	They are here for convenience.
+
+; DOS return codes
+%define INVALIDFUNC	0x01
+%define FILENOTFOUND	0x02
+%define PATHNOTFOUND	0x03
+%define ACCESSDENIED	0x05
+%define INVALIDDRIVE	0x0f
+%define NOMOREFILES	0x12
+%define DRIVENOTREADY	0x15
+%define GENERALFAILURE	0x1f
+
+%define PATHSEPARATOR	'\'
+
+; Stack frame (interrupt)
+struc frame
+  fr_OldBP	resw	 1
+  fr_RetAddr	resd	 1
+  fr_Flags	resw	 1
+  fr_Parm1	resw	 1
+endstruc
+
+; SHSUCDX Directory Entry (arranged to have the same offsets as the FDB)
+struc DirEnt
+  .FName	resb	11
+  .Fattr	resb	 1
+  .ParentBlk	resd	 1
+  .BlkNo	resd	 1
+  .Forw 	resw	 1
+  .FTime	resw	 1
+  .FDate	resw	 1
+  .Back 	resw	 1
+  .FSize	resd	 1
+endstruc
+
+; Drive Entry
+struc DrvEnt
+  .DevHdrp	resd	 1
+  .Strategyp	resd	 1		; -+
+  .Interruptp	resd	 1		;  |- must be here for SMARTDrive
+  .No		resb	 1		; -+
+  .Unit 	resb	 1		; number and unit stay together
+  .Type 	resb	 1
+  .Bufp 	resw	 1
+  .LastAccess	resw	 1
+  .BufBlkNo	resd	 1
+  .VolSize	resw	 1
+  .RootEnt	resb	DirEnt_size	; volume label is stored in FName
+endstruc
+
+; Request Header
+struc rh
+  .Length	resb	 1		; header size in bytes
+  .SubUnit	resb	 1		; MSCDEX fills in CD drive unit
+  .Command	resb	 1		; device command code
+  .Status	resw	 1		; device command status
+  .Reserved	resb	 8
+endstruc
+
+struc rhIOCTL
+  .Header	resb	rh_size 	; RH common
+  .MediaDesc	resb	 1
+  .CBPtr	resd	 1
+  .Bytes	resw	 1		; Control Block length
+  .StartSector	resw	 1
+  .VolIdPtr	resd	 1
+endstruc
+
+struc rhReadLong
+  .Header	resb	rh_size 	; RH common
+  .AddrMode	resb	 1
+  .Bufp 	resd	 1
+  .Count	resw	 1
+  .StartBlk	resd	 1
+  .ReadMode	resb	 1
+  .ISize	resb	 1
+  .ISkip	resb	 1
+endstruc
+
+rhcmdIOCTL_In	equ	 3
+rhcmdIOCTL_Out	equ	12
+rhcmdReadLong	equ    128
+
+;end undoc.mac

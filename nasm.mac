@@ -1,0 +1,1826 @@
+[list -]
+
+;
+; General purpose NASM macros.
+;
+; Jason Hood, April 2005. Public Domain.
+;
+;
+; =====================
+; Suffixed Instructions
+; =====================
+;
+; Most instructions that address memory can use an AT&T-style suffix to supply
+; the size specifier. Append 'b' for byte, 'w' for word and 'd' for dword.
+;
+;	movb	[bx], 0   ==>	mov	byte [bx], 0
+;
+; Note: MOV, SHL & SHR use an 'l' suffix for dword, since 'd' conflicts with
+;	 existing instructions.
+;
+;
+; ==========
+; Assignment
+; ==========
+;
+; hl: turn two byte values (high, low) into a word value.
+; HL: turn two word values (high, low) into a dword value.
+;
+;	mov   ax, hl(10, 20)  ==> mov	ax, 0a14h
+;	mov   eax, HL(10, 20) ==> mov	eax, 000a0014h
+;
+; ld/ldw/ldd: load a register or word/dword via the stack.
+;
+;	ld	es, ds	  ==>	push	ds
+;				pop	es
+;
+; ld: load a 32-bit register/memory from a 16-bit register/memory pair.
+;
+;	ld	eax, si,di ==>	push	word si
+;				push	word di
+;				pop	dword eax
+;
+; ldw: load a 16-bit register/memory pair from a 32-bit register/memory.
+;
+;	ldw	si,di, eax ==>	push	dword eax
+;				pop	word di
+;				pop	word si
+;
+; swap/swapw/swapd: xchg for segment registers or words/dwords.
+;
+;	swap	ds, es	  ==>	push	ds
+;				push	es
+;				pop	ds
+;				pop	es
+;
+; ldhl: load two (16-bit) registers from consecutive memory locations.
+;
+;	ldhl	dx,ax, addr ==> mov	dx, [addr+2]
+;				mov	ax, [addr]
+;
+; ldd: load DX:AX (i8086) or EAX from memory.
+;
+;	ldd	addr	  ==>	mov	dx, [addr+2]	mov eax, [addr]
+;				mov	ax, [addr]
+;
+; lss.: LSS for i8086.
+;
+;	lss.	sp, addr  ==>	mov	ss, [addr+2]	lss sp, [addr]
+;				mov	sp, [addr]
+;
+; movzx.: MOVZX for i8086 (AX/BX/CX/DX only).
+;
+;	movzx.	ax, [addr]  ==> mov	al, [addr]	movzx ax, [addr]
+;				mov	ah, 0
+;
+; sthl: store two (16-bit) registers to consecutive memory locations.
+;
+;	sthl	ds,dx, addr ==> mov	word [addr], dx
+;				mov	[addr+2], ds
+;
+; sxx: store a segment and (16-bit) register (xx = cs, ds, es, fs, gs, ss).
+;
+;	sds	dx, addr  ==>	mov   [addr], dx
+;				mov   [addr+2], ds
+;
+; mmov: copy memory via a register.
+;
+;	mmov	cx, [b], [a] ==> mov	cx, [a]
+;				 mov	[b], cx
+;
+; mmov[bwl]: copy memory via AL, AX or EAX.
+;
+;	mmovb	[b], [a]  ==>	mov	al, [a]
+;				mov	[b], al
+;
+; mmovd: if i8086 is defined, uses DX:AX, else EAX; a is optional.
+;
+;	mmovd	 b, a	  ==>	mov	ax, [a] 	mov eax, [a]
+;				mov	dx, [a+2]	mov [b], eax
+;				mov	[b],   ax
+;				mov	[b+2], dx
+;
+; cmov/cmovby/cmovw/cmovd: conditional move.
+;
+;	cmov cc, d, s	  ==>	jncc	skip
+;				mov	d, s
+;			     skip:
+;
+;	cmov d, cc, t, f  ==>	mov	d, f
+;				jncc	skip
+;				mov	d, t
+;			     skip:
+;
+; Notes: cc can be a simple expression (see below).
+;	 in the latter case cc can be cxz (swaps f & t and jumps if true).
+;	 the suffix applies to the destination, not the condition.
+;
+;
+; ========================
+; Zero setting and testing
+; ========================
+;
+; zero/zero[bwd]: set register/memory to zero (and set zero, clear carry).
+;
+;	zero	ax	  ==>	xor	ax, ax
+;	zerow	[var]	  ==>	and	word [var], byte 0
+;
+; isz/isz[bwd]: test register/memory for zero (and clear carry).
+;
+;	isz	ax	  ==>	test	ax, ax
+;	iszw	[var]	  ==>	cmp	word [var], byte 0
+;
+; jz[rbwd]:  jump if register/memory is zero.
+; jnz[rbwd]: jump if register/memory is not zero.
+;
+;	jzr	ax, label ==>	test	ax, ax
+;				jz	label
+;	jnzw	[var], lbl ==>	cmp	word [var], byte 0
+;				jne	lbl
+;
+; ifz/ifz[bwd]:   execute code if register/memory is zero.
+; ifnz/ifnz[bwd]: execute code if register/memory is not zero.
+;
+;	ifz ax, ...	  ==>	test	ax, ax
+;	ifz ax			jnz	fi
+;	 ...			...
+;	fi		     fi:
+;
+;
+; ========================
+; Flag setting and testing
+; ========================
+;
+; A flag is a boolean byte variable. It is 0 for off and -1 for on (and *not*
+; anything else).
+;
+; dflg: declare and initialise flag variables (allows an array/struc of flags).
+; tflg: test a flag (set carry if on).
+; sflg: set a flag.
+; cflg: clear a flag.
+; iflg: invert (toggle) a flag.
+;
+; flag	dflg	on,off	  ==>	flag	db -1,0
+;	tflg	[flag]	  ==>	rol	byte [flag], 1
+;	sflg	[flag]	  ==>	mov	byte [flag], -1
+;	sflg.	[flag]	  ==>	dec	byte [flag]
+;	cflg	[flag]	  ==>	mov	byte [flag], 0
+;	cflg.	[flag]	  ==>	inc	byte [flag]
+;	iflg	[flag]	  ==>	not	byte [flag]
+;
+; Note: sflg and cflg have an optional second parameter, assumed to be a
+;	 register with the appropriate value.
+;				
+; jflg/jnflg: jump if flag is on/off
+;
+;	jflg	[flag], lbl ==> rol	byte [flag], 1
+;				jc	lbl
+;
+; ifflg/ifnflg: execute an instruction or block if a flag is on/off.
+;
+;	ifflg [flag], ...	rol	[flag], 1
+;	ifflg [flag]	  ==>	jnc	fi
+;	 ...			...
+;	fi		     fi:
+;
+;
+; ================
+; Bit manipulation
+; ================
+;
+; bit(): translate a bit index to its value (up to three bits are allowed).
+; tbit:  test bits (NZ if any one bit is set).
+; tbits: test bits (ZR if all bits set; inverts destination).
+; sbit:  set bits.
+; cbit:  clear (reset) bits.
+; ibit:  invert (complement) bits.
+; cfbit: set bit 0 of a byte from carry.
+;
+;	test	al, bit(0) ==>	test	al, 01h
+;	tbit	al, 0,1   ==>	test	al, 03h
+;	sbit	al, 2	  ==>	or	al, 04h
+;	cbit	al, 3	  ==>	and	al, 0f7h
+;	ibit	al, 4	  ==>	xor	al, 10h
+;
+;	tbits	al, 0,1   ==>	not	al
+;				test	al, 3
+;
+;	cfbit	[flags]   ==>	pushf
+;				shr	byte [flags], 1
+;				popf
+;				rcl	byte [flags], 1
+;
+; Notes: if an identifier is not detected a memory reference is assumed and a
+;	  size prefix is automatically added based on the highest bit set.
+;	 recognises AX/BX/CX/DX and will use the high or low reg if suitable.
+;
+;
+; ==========
+; Preserving
+; ==========
+;
+; save..restore: push and pop a set of registers (or memory locations).
+;
+;	save	ax,bx	  ==>	push	ax
+;	 ...			push	bx
+;	restore 		...
+;				pop	bx
+;				pop	ax
+;
+; savea..restore: push/pop all, plus optional extra.
+;
+;	savea	ds	  ==>	push	ds
+;	 ...			pusha
+;	restore 		...
+;				popa
+;				pop	ds
+;
+; Note: if i8086 is defined, pusha becomes "save ax,cx,dx,bx,si,di".
+;
+; pusha./popa.: pusha/popa for i8086.
+;
+; Note: AX takes the place of SP.
+;
+;
+; ===========
+; Subroutines
+; ===========
+;
+; uses: alternative form of save/savea for use at the start of a subroutine.
+;
+;	uses	all,ds,es ==>	savea	ds,es
+;
+; return: (near) return from a subroutine.
+;
+;	return		  ==> .ret: restore
+;				    ret
+;
+; ret./retif: jump (conditionally) to the return point of a subroutine.
+;
+;	retif al zr	  ==>	test	al, al
+;				jz	.ret
+;
+; Note: uses/return can't be used for local/nested subroutines.
+;
+;
+; ========
+; Inlining
+; ========
+;
+; ijmpf/icallf: inlined far jump/call.
+;
+;	ijmpf	old2f	  ==>	    db	0eah ;jmp far
+;			      old2f dd	0
+;
+; i[bwd]: inlined variables.
+;
+;	mov	ax, i(num) ==>	    mov ax, 0
+; num	iw		       num  equ $-2
+;
+;
+; =============
+; If statements
+; =============
+;
+; The following statements (except else) all have suffixed versions (in the
+; case of "if." the suffix comes before the dot). "cc" can include "cxnz" and
+; can also be an expression (see below).
+;
+; jif: jump if an expression is true.
+;
+;	jif ax ,e, 1, lbl ==>	cmp	ax, 1
+;				je	lbl
+;
+; if.: conditionally execute a line of code (simple expression only).
+;
+;	if. cc, ...  ==>	jncc	skip
+;				...
+;			  skip:
+;
+; [ifn..]if..[andif..][elif..][else..]fi: conditionally execute blocks of code.
+;
+;	ifn cc	     ==>	jcc	if
+;	 ...			...
+;	if cc		  if:	jncc	elif
+;	 ...			...
+;	andif cc		jncc	elif
+;	 ...			...
+;	 fi cc			jcc	fi
+;	 ...			...
+;	elif cc 		jmp	fi
+;	 ...		  elif: jncc	else
+;	else			...
+;	 ...			jmp	fi
+;	fi		  else: ...
+;			  fi:
+;
+; Note: "ifn" is used as a substitute for an "orif" statement.
+;	eg: instead of "if e/orif c", do "ifn e/if c".
+;
+;
+; =====
+; Loops
+; =====
+;
+; All the statements below accepting conditions also have suffixed counterparts.
+; "cc" can be "cxnz", as well as an expression (see below).
+;
+; repeat..until: loop until a condition is met.
+;
+;	repeat	     ==>  repeat:
+;	 ...			...
+;	until cc		jncc	repeat
+;
+; repeat..next: loop using CX as a counter.
+;
+;	repeat	8    ==>	mov	cx, 8
+;	 ...		  rpt:	...
+;	next [cc]		loop[cc] rpt
+;
+;	repeat	,8   ==>	mov	cl, 8	;assume CH is zero
+;	 ...		  rpt:	...
+;	next			loop	rpt
+;
+; Note: next can still be used even if repeat has no parameter.
+;	use "repeat0" to test CX for zero and skip the loop.
+;
+; repeat[rbwd]..next: use a register/byte/word/dword as a counter.
+;
+;	repeatr al   ==>  rpt:	...
+;	 ...			dec	al
+;	next			jnz	rpt
+;
+;	repeatr al,ns ==> rpt:	...
+;	 ...			dec	al
+;	next			jns	rpt
+;
+; Note: there is a corresponding "repeat0" form, which assumes a positive
+;	 count and jumps to the DEC to test for -1 to skip the loop.
+;
+; rptlmt..next: repeat a number of times, or until a limit is reached.
+;
+;	rptlmt	dx, 8 ==>	mov	cx, 8
+;	 ...		   rpt: ...
+;	next			dec	dx
+;				loopnz	rpt
+;
+; Note: a second comma can be used to just set CL (dx,,8).
+;
+; for..next: update a variable, until a condition is met, or a number of times.
+;
+;	for var, [start], cond|*,[cnt] [,+|step|-[,step]]
+;
+;	var:	the variable to update
+;	start:	it's starting value (if not already set)
+;	cond:	simple expression to continue the loop;
+;		 if the initial parameter is blank, var will be used
+;	*,cnt:	loop cnt times; as with repeat cnt can be CX, CL or
+;		 a register/byte/word/dword (or nothing if CX is already set)
+;	+:	INC var
+;	step:	ADD step to var
+;	-:	DEC var
+;	-,step: SUB step from var
+;
+;	for si, table, {,b, tableend}, entry_size
+;	 ...	     ==>	mov	si, table
+;	next		  for:	...
+;				add	si, entry_size
+;				cmp	si, tableend
+;				jb	for
+;
+;	for si, table, *,{w,[entries]}, entry_size
+;	 ...	     ==>	mov	si, table
+;	next		  for:	...
+;				add	si, entry_size
+;				dec	word [entries]
+;				jnz	for
+;
+; Note: there is also a "for0" statement, which tests the condition before
+;	 starting the loop; as with "repeat0", the counter is assumed to be
+;	 positive and JNS will be used to continue the loop.
+;
+; do..while: loop while a condition is true.
+;
+;	do	     ==>  do:
+;	 ...			...
+;	while cc		jcc	do
+;
+; while..[is..]wend: loop while a condition is true, or forever.
+;
+;	while	     ==>  while:
+;	 ...			...
+;	is cc			jncc	wend
+;	 ...			...
+;	wend			jmp	while
+;			  wend:
+;
+; when..while[..is]: loop while a condition is true.
+;
+;	when	     ==>	jmp	while
+;	 ...		  when:
+;	while			...
+;	 ...		  while:
+;	is cc			...
+;				jcc	when
+;
+; whilst: starts a new while within a do or when (do..whilst..wend..while).
+;
+; break: break out of any of the above.
+;
+;	break [cc]   ==>	jcc	<done>
+;
+; cntnu: skip to the next cycle.
+;
+;	cntnu [cc]   -->	jcc	<next>
+;
+;
+; ===========
+; Expressions
+; ===========
+;
+; An expression combines an instruction with a condition code. It also allows
+; AND and OR operations (however, a simple expression does not). A single
+; expression can be used to test a set of values or a range of values.
+;
+; Condition code:
+;	e		==>	je true
+;	cxnz		==>	jcxz false
+;
+; Flag: a memory reference (w/o size prefix) is assumed to be a flag.
+;	[Flag]		==>	rol byte [Flag], 1 / jc true
+;	!,[Flag]	==>	rol byte [Flag], 1 / jnc true
+;
+; Zero: test a register/byte/word/dword for (not) zero.
+;	ax zr		==>	test ax, ax	 / jz true
+;	[bx] nzb	==>	cmp byte [bx], 0 / jne true
+;
+; Bits: test a bit is set/clear.
+;	al ,&, bit(0,1) ==>	test al, 3 / jnz true
+;	al ,&!, 4	==>	test al, 4 / jz true
+;
+; Comparison:
+;	al ,e, 4	==>	cmp al, 4 / je true
+;
+; Set: test any number of values.
+;	al ,e, {1,2}	==>	cmp al, 1 / je true  / cmp al, 2 / je true
+;	al ,ne, {1,2}	==>	cmp al, 1 / je false / cmp al, 2 / jne true
+;
+; Range (prefix with '-' for signed comparisons, eg "-[]"):
+;	al ,[],  {'0','9'} ==>  cmp al, '0' / jb false  / cmp al, '9' / jbe true
+;	al ,[!], {'0','9'} ==>  cmp al, '0' / jb true   / cmp al, '9' / ja true
+;	al ,(),  {'0','9'} ==>  cmp al, '0' / jbe false / cmp al, '9' / jb true
+;	al ,(!), {'0','9'} ==>  cmp al, '0' / jbe true  / cmp al, '9' / jae true
+;
+; AND/OR: combines multiple expressions (left to right).
+;	{al ,[], '0','9'} OR {al ,[], 'A','Z'} OR {al ,[], 'a','z'}
+;			   ==> true if AL is a digit or letter
+;	{al ,[!], '0','9'} AND {al ,[!], 'A','Z'} AND {al ,[!], 'a','z'}
+;			   ==> true if AL is not a digit or letter
+;
+; Note: using a suffixed statement will only apply the size prefix to the
+;	 first expression ("ifb {[bx]} OR {byte [si]}").
+;
+;
+; ==========
+; Interrupts
+; ==========
+;
+; intr: perform an INT, setting AH or AX or AH & AL (use %define, not equ).
+; dos:	intr 21h,
+; vid:	intr 10h,
+; disk: intr 13h,
+; kbd:	intr 16h,
+; amis: intr 2dh,
+; mpx:	intr 2fh,
+; mous: intr 33h, 0,
+; exit: intr 21h, 4ch,
+; win:	intr 2fh, 16h,
+;
+;	dos	25h, 2fh  ==>	mov	ax, 252fh
+;				int	21h
+;
+; Note: the preprocessor doesn't recognise negative numbers, so "exit -1"
+;	 will set AH & AL, not AX; use "exit 0-1" as a workaround.
+;
+; prch: use DOS to print a character.
+;
+;	prch	'a'       ==>   mov     ah, 2
+;	prch.	'b'             mov     dl, 'a'
+;				int	21h
+;				mov	dl, 'b'
+;				int	21h
+;
+; Note: the character is optional.
+;
+; dc: define a C string (processes escapes if CSTR is defined).
+; d$, dz, dln: define a '$'-, NUL-, or CRLF-terminated C string.
+; dl$, dlz: define a CRLF and '$'- or NUL-terminated C string.
+;
+; Notes: the string is optional, in which case just the terminator is written.
+;	 the following C escapes are recognised (case sensitive):
+;		\0 NUL		\l linefeed (not C)
+;		\a alert	\n CR+LF    (not strictly C)
+;		\b backspace	\r return
+;		\e escape	\t tab
+;	 an unrecognised escape is treated as an escaped literal ("\\" is "\").
+;
+;	%define CSTR
+;	dl$ "First line.\nSecond line."
+;			  ==>	db "First line.",13,10,"Second line.",13,10,'$'
+;
+; prnt$: use DOS to print a dollar-terminated string.
+;
+;	prnt$	str1	  ==>	mov	ah, 9
+;	prnt$.	str2		mov	dx, str1
+;				int	21h
+;				mov	dx, str2
+;				int	21h
+;
+; Notes: str can be an actual string (or a character number); it will be added
+;	  to the STR$ section (default is .data) using d$.
+;	 the string is optional.
+
+
+; =====================
+; Suffixed Instructions
+; =====================
+
+; Shift data size from the destination to the instruction.
+%macro suffix_ 1-*.nolist
+  %rep %0
+    %idefine %1b %1 byte
+    %idefine %1w %1 word
+    %idefine %1d %1 dword
+    %rotate 1
+  %endrep
+%endmacro
+
+suffix_ adc,  add,  and, cmp, dec, div,  idiv
+suffix_ imul, inc,  mov, mul, neg, not,  or
+suffix_ pop,  push, rcl, rcr, rol, ror,  sal
+suffix_ sar,  sbb,  shl, shr, sub, test, xor
+suffix_ for,  for0
+
+; Use an 'l' suffix for already existing instructions.
+%undef movd
+%undef shld
+%undef shrd
+%idefine movl mov dword
+%idefine shll shl dword
+%idefine shrl shr dword
+
+; An immediate byte can be PUSHed, but not POPped.
+%undef popb
+
+; Bug?: Braces are not recognised within a parameter, so the above solution
+; won't work with braced parameters (ie: "byte {[bx] ,e, 1}" fails).
+%macro size_ 3-4+.nolist
+	%1 {%2 %3},%4
+%endmacro
+
+%macro ssuffix_ 1-*.nolist
+  %rep %0
+    %idefine %1b size_ %1, byte,
+    %idefine %1w size_ %1, word,
+    %idefine %1d size_ %1, dword,
+    %rotate 1
+  %endrep
+%endmacro
+
+ssuffix_ retif, jif, ifn, if, andif, elif, fi
+ssuffix_ rptlmt, while, whilst, is, break, cntnu, next, until
+
+
+; ==========
+; Assignment
+; ==========
+
+; Translate two bytes to a word, or two words to a dword.
+%define hl(hi, lo) (((hi) <<  8) | (lo & 0xff))
+%define HL(hi, lo) (((hi) << 16) | (lo & 0xffff))
+
+%imacro ld 2.nolist
+	push	%2
+	pop	%1
+%endmacro
+
+%imacro ldw 2.nolist
+	pushw	%2
+	popw	%1
+%endmacro
+
+%imacro ldd 2.nolist
+	pushd	%2
+	popd	%1
+%endmacro
+
+; Copy 16-bit pair to 32-bit (rm32, hi16, lo16).
+%imacro ld 3.nolist
+	pushw	%2
+	pushw	%3
+	popd	%1
+%endmacro
+
+; Copy 32-bit to 16-bit pair (hi16, lo16, rm32).
+%imacro ldw 3.nolist
+	pushd	%3
+	popw	%2
+	popw	%1
+%endmacro
+
+; Swap two segment registers or memory locations.
+%macro swap_ 2-3.nolist
+	push%1	%2
+	push%1	%3
+	pop%1	%2
+	pop%1	%3
+%endmacro
+%idefine swap  swap_  ,
+%idefine swapw swap_ w,
+%idefine swapd swap_ d,
+
+; Load two 16-bit registers from memory (high, low, address w/o brackets).
+%imacro ldhl 3.nolist
+	mov	%1, [%3+2]
+	movw	%2, [%3]		; generates warning if 32-bit reg
+%endmacro
+
+; Macros coded for the 8086.
+%ifdef i8086
+
+; Load DX:AX from consecutive memory locations.
+%imacro ldd 1.nolist
+	ldhl	dx,ax, %1
+%endmacro
+
+%idefine lss. ldhl ss,
+
+%imacro movzx. 2.nolist
+  %push zx
+  %ifidni   %1,ax
+    %define %$r a
+  %elifidni %1,bx
+    %define %$r b
+  %elifidni %1,cx
+    %define %$r c
+  %elifidni %1,dx
+    %define %$r d
+  %else
+    %define %$r %1
+    %error "`%$r' not supported by `movzx.'"
+    %define %$r a			; prevent additional errors
+  %endif
+	mov	%{$r}l, %2
+	mov	%{$r}h, 0
+  %pop
+%endmacro
+
+; Store DX:AX to memory, after optionally loading from memory.
+%imacro mmovd 1-2.nolist
+  %if %0 == 2
+	mov	ax, [%2]
+	mov	dx, [%2+2]
+  %endif
+	mov	[%1],	ax
+	mov	[%1+2], dx
+%endmacro
+
+%else	; 386 macros
+
+; Load EAX from memory.
+%imacro ldd 1.nolist
+	mov	eax, [%1]
+%endmacro
+
+%imacro lss. 2.nolist
+	lss	%1, [%2]
+%endmacro
+
+%idefine movzx. movzx
+
+; Store EAX to memory, after optionally loading from memory.
+%imacro mmovd 1-2.nolist
+  %if %0 == 2
+	mov	eax, [%2]
+  %endif
+	mov	[%1], eax
+%endmacro
+
+%endif
+
+; Store two registers (high, low [16-bit], address).
+%imacro sthl 3.nolist
+	movw	[%3], %2		; generates warning if 32-bit reg
+	mov	[%3+2], %1
+%endmacro
+
+; Store a segment and register (16-bit).
+%idefine scs sthl cs,
+%idefine sds sthl ds,
+%idefine ses sthl es,
+%idefine sfs sthl fs,
+%idefine sgs sthl gs,
+%idefine sss sthl ss,
+
+; Copy memory via a register (reg, dst, src).
+%imacro mmov 3.nolist
+	mov	%1, %3
+	mov	%2, %1
+%endmacro
+
+; Copy memory via the accumulator.
+%idefine mmovb mmov al,
+%idefine mmovw mmov ax,
+%idefine mmovl mmov eax,
+
+; Conditional move.
+%macro cmov_ 4.nolist			; if (cc) rm = val
+	if. {%2}, mov%1 %3, %4
+%endmacro
+
+%macro cmov_ 5.nolist			; rm = (cc) ? val1 : val2
+  %ifidni %3,cxz 
+	mov%1	%2, %4
+	if. cxnz, mov%1 %2, %5
+  %else
+	mov%1	%2, %5
+	if. {%3}, mov%1 %2, %4
+  %endif
+%endmacro
+
+%idefine cmov	cmov_  ,
+%idefine cmovby cmov_ b,		; cmovb is already an instruction
+%idefine cmovw	cmov_ w,
+%idefine cmovd	cmov_ l,
+
+
+; ========================
+; Zero setting and testing
+; ========================
+
+; Zero a register (and set zero, clear carry).
+%imacro zero 1.nolist
+	xor	%1, %1
+%endmacro
+
+; Zero a byte/word/dword (and set zero, clear carry).
+%imacro zero_ 1.nolist
+	and	%1, byte 0
+%endmacro
+%idefine zerob zero_ byte
+%idefine zerow zero_ word
+%idefine zerod zero_ dword
+
+; Test a register for zero (and clear carry).
+%imacro isz 1.nolist
+	test	%1, %1
+%endmacro
+
+; Test a byte/word/dword for zero (and clear carry).
+%macro isz_ 1.nolist
+	cmp	%1, byte 0
+%endmacro
+%idefine iszb isz_ byte
+%idefine iszw isz_ word
+%idefine iszd isz_ dword
+
+; Helper macro for zero and flag jumping.
+%macro j_ 4.nolist
+	%1	%3
+	j%2	%4
+%endmacro
+
+; Helper macro for zero and flag if'ing.
+%macro if_ 3-4+.nolist
+	%1	%3
+  %if %0 == 3
+	if %2
+  %else
+	if. %2, %4
+  %endif
+%endmacro
+
+; Jump if a register/byte/word/dword is (not) zero.
+%idefine jzr  j_ isz,  z,
+%idefine jzb  j_ iszb, e,
+%idefine jzw  j_ iszw, e,
+%idefine jzd  j_ iszd, e,
+%idefine jnzr j_ isz,  nz,
+%idefine jnzb j_ iszb, ne,
+%idefine jnzw j_ iszw, ne,
+%idefine jnzd j_ iszd, ne,
+
+; Execute code if a register/byte/word/dword is (not) zero.
+%idefine ifz   if_ isz,  z,
+%idefine ifzb  if_ iszb, e,
+%idefine ifzw  if_ iszw, e,
+%idefine ifzd  if_ iszd, e,
+%idefine ifnz  if_ isz,  nz,
+%idefine ifnzb if_ iszb, ne,
+%idefine ifnzw if_ iszw, ne,
+%idefine ifnzd if_ iszd, ne,
+
+
+; ========================
+; Flag setting and testing
+; ========================
+
+; Declare flag variables (as on or off).
+%imacro dflg 1-*.nolist
+  %rep %0
+    %ifidni %1,on
+	db -1
+    %elifidni %1,off
+	db 0
+    %else
+	db %1
+    %endif
+    %rotate 1
+  %endrep
+%endmacro
+
+; Test a flag (set carry if on).
+%imacro tflg 1.nolist
+	rolb	%1, 1
+%endmacro
+
+; Set a flag.
+%imacro sflg 1-2.nolist -1
+	movb	%1, %2
+%endmacro
+%idefine sflg. decb
+
+; Clear a flag.
+%imacro cflg 1-2.nolist 0
+	movb	%1, %2
+%endmacro
+%idefine cflg. incb
+
+; Invert (toggle) a flag.
+%idefine iflg notb
+
+; Jump depending on a flag.
+%idefine jflg  j_ tflg, c,
+%idefine jnflg j_ tflg, nc,
+
+; Execute code depending on a flag.
+%idefine ifflg	if_ tflg, c,
+%idefine ifnflg if_ tflg, nc,
+
+
+; ================
+; Bit manipulation
+; ================
+
+; Translate a bit index to its value.
+%idefine bit(n)        (1 << (n))
+%idefine bit(n1,n2)    (bit(n1) + bit(n2))
+%idefine bit(n1,n2,n3) (bit(n1) + bit(n2) + bit(n3))
+
+; Translate multiple bits to a value.
+%macro mbit_ 1-*.nolist
+  %assign bitval_ 0
+  %rep %0
+    %assign bitval_ bitval_ + bit(%1)
+    %rotate 1
+  %endrep
+%endmacro
+
+; Check destination size against source value.
+%macro bitsize_ 1.nolist
+  %ifid %1			; assume register or already-sized memory
+    %define bitdst_ %1
+    %ifidni   %1,ax
+      %define %%r a
+    %elifidni %1,bx
+      %define %%r b
+    %elifidni %1,cx
+      %define %%r c
+    %elifidni %1,dx
+      %define %%r d
+    %endif
+    %ifdef %%r
+      %if bitval_ < 100h
+	%define bitdst_ %%r %+ l
+      %elif bitval_ & 0ffh == 0
+	%define bitdst_ %%r %+ h
+	%assign bitval_ bitval_ >> 8
+      %endif
+    %endif
+  %else 			; assume memory
+    %if bitval_ < 100h
+      %define bitdst_ byte %1
+    %elif bitval_ < 10000h
+      %define bitdst_ word %1
+    %else
+      %define bitdst_ dword %1
+    %endif
+  %endif
+%endmacro
+
+; Test/set/clear/invert bits.
+%macro bit_ 3+.nolist
+  mbit_ %3
+  bitsize_ %2
+  %ifidn %1,and
+    %assign bitval_ ~bitval_
+  %endif
+	%1	bitdst_, bitval_
+%endmacro
+%idefine tbit bit_ test,
+%idefine sbit bit_ or,
+%idefine cbit bit_ and,
+%idefine ibit bit_ xor,
+
+; Test if all bits are set (but inverts destination).
+%imacro tbits 2+.nolist
+  mbit_ %2
+  bitsize_ %1
+	not	bitdst_
+	test	bitdst_, bitval_
+%endmacro
+
+; Set bit 0 of a byte from carry.
+%imacro cfbit 1.nolist
+	pushf
+	shrb	%1, 1
+	popf
+	rclb	%1, 1
+%endmacro
+
+
+; ==========
+; Preserving
+; ==========
+
+; PUSH/POP a list.
+%macro push_ 1-*.nolist
+  %rep %0
+	push	%1
+    %rotate 1
+  %endrep
+%endmacro
+
+%macro pop_ 1-*.nolist
+  %rep %0
+    %rotate -1
+	pop	%1
+  %endrep
+%endmacro
+
+; Save a set of registers (or memory locations).
+%imacro save 1+.nolist
+  %push save
+  %define %$regs %1
+	push_	%1
+%endmacro
+
+%ifdef i8086
+
+; Save all registers, plus extra.
+%imacro savea 0-1+.nolist
+  %if %0 > 0
+	save	%1,ax,cx,dx,bx,si,di
+  %else
+	save	ax,cx,dx,bx,si,di
+  %endif
+%endmacro
+
+; Push/pop all general purpose registers (except SP).
+%idefine pusha. save ax,cx,dx,bx,ax,bp,si,di
+%idefine popa.	restore
+
+%else	; 386
+
+%imacro savea 0-1+.nolist
+  %if %0 > 0
+	save	%1
+  %endif
+  %push savea
+	pusha
+%endmacro
+
+%idefine pusha. pusha
+%idefine popa.	popa
+
+%endif
+
+; Restore the registers previously saved.
+%imacro restore 0.nolist
+  %ifctx savea
+	popa
+    %pop
+    %define %%savea
+  %endif
+  %ifctx save
+	pop_	%$regs
+    %pop
+  %elifndef %%savea
+    %error "expected `save' or 'savea' before `restore'"
+  %endif
+%endmacro
+
+
+; ===========
+; Subroutines
+; ===========
+
+; Alternative form of save/savea for use at the start of a subroutine.
+%imacro uses 1-2+.nolist
+  %ifidni %1,all
+	savea	%2
+  %else
+	save	%1,%2
+  %endif
+%endmacro
+
+; Jump to the return point of a subroutine.
+%idefine ret. jmp .ret
+
+; Conditionally jump to the return point of a subroutine.
+%imacro retif 1-2+.nolist
+	eop_ +, .ret, {%1}, %2
+%endmacro
+
+; Return from a subroutine, restoring saved registers.
+%imacro return 0.nolist
+  .ret:
+  %ifctx save savea
+	restore
+  %endif
+	ret
+%endmacro
+
+
+; ========
+; Inlining
+; ========
+
+; Inlined far jump.
+%imacro ijmpf 1.nolist
+	db     0eah ;jmp far
+  %1	dd     0
+%endmacro
+
+; Inlined far call.
+%imacro icallf 1.nolist
+	db     09ah ;call far
+  %1	dd     0
+%endmacro
+
+; Inlined variables.
+%idefine i(var) 0
+%idefine ib equ $-1
+%idefine iw equ $-2
+%idefine id equ $-4
+
+
+; =============
+; If statements
+; =============
+
+; Allow "cxnz" as an inverse conditional code.
+%macro jn_ 2.nolist
+  %ifidni %1,cxnz
+	jcxz	%2
+  %else
+	j%-1	%2
+  %endif
+%endmacro
+
+; Extract the last parameter contained within a greedy parameter.
+%macro exp_ 1-*.nolist
+  %rotate -1
+  %define last_ %1
+  %define rest_
+  %rep %0 - 1
+    %rotate 1
+    %xdefine rest_ rest_,{%1}
+  %endrep
+%endmacro
+
+; Jump depending on an expression.
+%imacro jif 2+.nolist
+  exp_ %2
+	eop_ +, last_, {%1}rest_
+%endmacro
+
+; Execute a single line of code depending on an expression.
+%imacro if. 2+.nolist
+	eop_ -, %%skip, {%1}	; Bug: can't brace braces (so AND/OR won't work
+	%2			;      unless the command is braced, which I
+    %%skip:			;      don't want to do)
+%endmacro
+%idefine ifb. size_ if., byte,
+%idefine ifw. size_ if., word,
+%idefine ifd. size_ if., dword,
+
+; Execute a block of code depending on an expression.
+%imacro ifn 1-2+.nolist 	; Bug: using + on a braced parameter ignores
+  %ifnctx ifn			;      all following parameters
+    %push ifn
+  %endif
+	eop_ +, %$if, {%1}, %2
+%endmacro
+
+%imacro if 1-2+.nolist
+  %ifctx ifn
+    %repl if
+  %else
+    %push if
+  %endif
+	eop_ -, %$ifnot, {%1}, %2
+  %$if:
+%endmacro
+
+%imacro andif 1-2+.nolist
+  %ifctx if
+	eop_ -, %$ifnot, {%1}, %2
+  %else
+    %error "expected `if' before `andif'"
+  %endif
+%endmacro
+
+%imacro elif 1-2+.nolist
+  %ifctx if elif
+	jmp	%$fi
+    %ifctx if
+      %repl elif
+      %$ifnot:
+      %assign %$i 0
+    %else
+      %$ifnot%$i:
+      %assign %$i %$i + 1
+    %endif
+	eop_ -, %$ifnot%$i, {%1}, %2
+  %else
+    %error "expected `if' before `elif'"
+  %endif
+%endmacro
+
+%imacro else 0.nolist
+  %ifctx if elif
+	jmp	%$fi
+    %ifctx if
+      %$ifnot:
+    %else
+      %$ifnot%$i:
+    %endif
+    %repl else
+  %else
+    %error "expected `if' before `else'"
+  %endif
+%endmacro
+
+%imacro fi 0-2+.nolist
+  %ifctx if elif else
+    %if %0 == 0
+      %ifctx if
+	%$ifnot:
+      %elifctx elif
+	%$ifnot%$i:
+      %endif
+      %$fi:
+      %pop
+    %else
+	eop_ +, %$fi, {%1}, %2
+    %endif
+  %else
+    %error "expected `if' before `fi'"
+  %endif
+%endmacro
+
+
+; =====
+; Loops
+; =====
+
+; Determine the value to use for loop counting. If the first parameter is one
+; of "rbwd" then a register, byte, word or dword will be used (the second
+; parameter) and a DEC/JMP loop will be setup. By default it will count down to
+; zero, but a third parameter can be specified for the terminating condition
+; (intended for "ns" to include zero in the count and stop at -1). If the first
+; parameter is blank, CL will be set to the second parameter (if not blank)
+; assuming CH is already zero. Otherwise CX will be set to the first parameter.
+; LOOP will then be used for the loop.
+%macro movcnt_ 0-3.nolist
+  %ifidn {%1},{}
+    %ifnidn {%2},{}
+	mov	cl, %2
+    %endif
+  %elifidni %1,r
+    %define %$dec dec %2
+  %elifidni %1,b
+    %define %$dec dec byte %2
+  %elifidni %1,w
+    %define %$dec dec word %2
+  %elifidni %1,d
+    %define %$dec dec dword %2
+  %else
+	mov	cx, %1
+  %endif
+  %if %0 < 3			; Bug: default parameter not set if called
+    %define %$j jnz		;      from an empty replacement parameter
+  %else 			;      (movcnt_ %1 when %1 is empty)
+    %define %$j j%+3		; Bug: %+ and %- crash on empty parameter
+  %endif			; (that's how I discovered the default bug)
+%endmacro
+
+; Execute a loop until a condition becomes true (repeat..until).
+; Execute a loop a number of times (repeat..next).
+%imacro repeat 0-1+.nolist
+  %push repeat
+	movcnt_ %1
+  %$loop:
+%endmacro
+%idefine repeatr repeat r,
+%idefine repeatb repeat b,
+%idefine repeatw repeat w,
+%idefine repeatd repeat d,
+
+%imacro until 1-2+.nolist
+  %ifctx repeat
+    %$cont:
+	eop_ -, %$loop, {%1}, %2
+    %$done:
+    %pop
+  %else
+    %error "expected `repeat' before `until'"
+  %endif
+%endmacro
+
+; Execute a loop a number of times, or not at all (repeat0..next).
+%imacro repeat0 0-2.nolist
+  %push repeat
+	movcnt_ %1,%2,ns	; assume positive count and use an initial
+    %ifdef %$dec		;  DEC to stop at -1
+	jmp	%$test
+    %else
+	jcxz	%$done
+    %endif
+  %$loop:
+%endmacro
+%idefine repeat0r repeat0 r,
+%idefine repeat0b repeat0 b,
+%idefine repeat0w repeat0 w,
+%idefine repeat0d repeat0 d,
+
+; Execute a loop a number of times, or until a limit is reached.
+%imacro rptlmt 1-2+.nolist
+  %push rptlmt
+  %define %$cnt %1
+	movcnt_ %2
+  %ifdef %$dec
+    %error "`CX' must be used for `rptlmt'"
+    %undef %$dec
+  %endif
+  %$loop:
+%endmacro
+
+%idefine for  for_ +,		; loop always executed once
+%idefine for0 for_ -,		; test first
+
+; Expand the for condition to determine if the first argument is empty; if so
+; prepend the for variable to the condition.
+%macro fc_ 1-*.nolist
+  %ifidn {%1},{}
+    %xdefine %$cond %$var %$cond
+  %endif
+%endmacro
+
+; Do a for loop (not quite C style).
+%macro for_ 4-7.nolist
+  %push for
+  %ifidn {%2},{}
+    %error "'for' requires a variable"
+  %endif
+  %ifidn {%4},{}
+    %error "'for' requires a condition"
+  %endif
+  %ifidn %1,-
+    %define %%jump
+  %endif
+  %define %$var %2
+  %ifnidn {%3},{}
+    %define %%start mov %$var, %3
+  %endif
+  %ifidn %4,*
+	movcnt_ %5
+    %rotate 1
+    %assign %%c %0 - 1
+  %else
+    %define %$cond %4
+    fc_ %4
+    %assign %%c %0
+  %endif
+  %if %%c >= 5
+    %ifidn %5,-
+      %if %%c == 6
+	%define %$step sub %$var, %6
+      %else
+	%define %$step dec %$var
+      %endif
+    %elifidn %5,+
+      %define %$step inc %$var
+    %else
+      %define %$step add %$var, %5
+    %endif
+  %endif
+	%%start
+  %ifdef %%jump
+    %ifdef %$cond
+	jmp	%$test
+    %elifdef %$dec
+      %define %$j jns
+	jmp	%$test
+    %else
+	jcxz	%$done
+    %endif
+  %endif
+  %$loop:
+%endmacro
+
+%imacro next 0-2+.nolist
+  %$cont:
+  %ifctx for
+	%$step
+      %$test:
+    %ifdef %$cond
+	eop_ +, %$loop, %$cond
+    %elifdef %$dec
+	%$dec
+	%$j	%$loop
+    %else
+	loop	%$loop
+    %endif
+    %if %0 != 0
+      %error `next' does not accept condition from `for'
+    %endif
+  %elifctx rptlmt
+	dec	%$cnt
+	loopnz	%$loop
+    %if %0 != 0
+      %error `next' does not accept condition from `rptlmt'
+    %endif
+  %elifctx repeat
+    %ifdef %$dec
+      %$test:
+	%$dec
+	%$j	%$loop
+      %if %0 != 0
+	%error `next' does not accept condition from non-CX `repeat'
+      %endif
+    %elif %0 == 0
+	loop	%$loop
+    %else
+	eop_ , %%loop, {%1}, %2
+      %%loop:
+      %ifidni	ec_,e
+      %elifidni ec_,z
+      %elifidni ec_,ne
+      %elifidni ec_,nz
+      %else
+	%error "`next' only accepts (not-)equal/zero conditions from `repeat'"
+	%define ec_
+      %endif
+	loop %+ ec_ %$loop
+    %endif
+  %else
+    %error "expected `repeat' or `for' before `next'"
+  %endif
+  %$done:
+  %pop
+%endmacro
+
+; Execute a loop while a condition is true (do..while, while[..is]..wend,
+; when..while[..is]). Whilst can be used to force a new while loop.
+%imacro do 0.nolist
+  %push do
+  %$loop:
+%endmacro
+
+%imacro when 0.nolist
+  %push when
+	jmp	%$while
+  %$loop:
+%endmacro
+
+%imacro while 0-2+.nolist
+  %if %0 == 0
+    %ifctx when
+      %repl is
+      %$while:
+    %else
+      %push while
+      %$loop:
+    %endif
+    %$cont:
+  %else
+    %ifctx when
+      %repl is
+      %$while:
+    %elifnctx do
+      %push while
+      %$loop:
+    %endif
+    %$cont:
+	is {%1}, %2
+  %endif
+%endmacro
+
+%imacro whilst 0-2+.nolist
+  %push while
+  %$loop:
+  %$cont:
+  %if %0 != 0
+	is {%1}, %2
+  %endif
+%endmacro
+
+%imacro is 1-2+.nolist
+  %ifctx while
+	eop_ -, %$done, {%1}, %2
+  %elifctx is do
+	eop_ +, %$loop, {%1}, %2
+    %$done:
+    %pop
+  %else
+    %error "expected `while' before `is'"
+  %endif
+%endmacro
+
+%imacro wend 0.nolist
+  %ifctx while
+	jmp	%$loop
+    %$done:
+    %pop
+  %else
+    %error "expected `while' before `wend'"
+  %endif
+%endmacro
+
+; Break out of a loop.
+%imacro break 0-2+.nolist
+  %ifctx repeat for do while is when if
+    %ifctx if
+      %define %%l %$$done
+    %else
+      %define %%l %$done
+    %endif
+    %if %0 == 0
+	jmp	%%l
+    %else
+	eop_ +, %%l, {%1}, %2
+    %endif
+  %else
+    %error "unexpected 'break'"
+  %endif
+%endmacro
+
+; Continue a loop (skip to next cycle).
+%imacro cntnu 0-2+.nolist
+  %ifctx repeat for do while is when if
+    %ifctx if
+      %define %%l %$$cont
+    %else
+      %define %%l %$cont
+    %endif
+    %if %0 == 0
+	jmp	%%l
+    %else
+	eop_ +, %%l, {%1}, %2
+    %endif
+  %else
+    %error "unexpected 'cntnu'"
+  %endif
+%endmacro
+
+
+; ===========
+; Expressions
+; ===========
+
+; Evaluate an "expression" (comparison, test, flag, zero).
+%macro ee_ 1-3.nolist
+  %ifidn {%2},{}		; two commas counts as one empty arg
+    %ifid %1			; assume condition code
+      %define ec_ %1
+    %else			; assume flag
+	tflg	%1
+      %define ec_ c
+    %endif
+  %elif %0 == 2
+    %ifidn %1,! 		; not flag
+	tflg	%2
+      %define ec_ nc
+    %endif
+  %elifidn %2,&
+	test	%1, %3
+    %define ec_ nz
+  %elifidn %2,&!
+	test	%1, %3
+    %define ec_ z
+  %else
+	cmp	%1, %3
+    %define ec_ %2
+  %endif
+%endmacro
+
+
+; Test for (not) zero as an expression.
+%define  zr_(r) r ,&!, r
+%define  zb_(m)  byte m ,e,  byte 0
+%define  zw_(m)  word m ,e,  byte 0
+%define  zd_(m) dword m ,e,  byte 0
+%define nzr_(r) r ,&, r
+%define nzb_(m)  byte m ,ne, byte 0
+%define nzw_(m)  word m ,ne, byte 0
+%define nzd_(m) dword m ,ne, byte 0
+
+%idefine  zr , zr_
+%idefine  zb , zb_
+%idefine  zw , zw_
+%idefine  zd , zd_
+%idefine nzr ,nzr_
+%idefine nzb ,nzb_
+%idefine nzw ,nzw_
+%idefine nzd ,nzd_
+
+
+; Evaluate an expression (set, range).
+%macro eval_ 3-*.nolist
+  %ifidn %1,-
+    %define %%cont %%skip
+    %define %%stop %2
+    %define %%jc jn_ ec_, %%stop
+  %else
+    %define %%cont %2
+    %define %%stop %%skip
+    %ifnidn {%1},{}
+      %define %%jc j %+ ec_ %%cont
+    %endif
+  %endif
+  %ifidn {%4},{}			; can't rely on argument count
+	ee_ %3				;  due to empty arguments
+  %elifidn {%5},{}
+    %ifidn %3,!
+	ee_ %3,%4
+    %else
+	ee_ %4(%3)
+    %endif
+  %elifidn {%6},{}
+	ee_ %3, %4, %5
+  %else
+  %define %%src %3
+  %ifidni %4,e
+    %rep %0 - 5
+	cmp	%%src, %5
+	je	%%cont
+      %rotate 1
+    %endrep
+	cmp	%%src, %5
+      %define ec_ e
+  %elifidni %4,ne
+    %rep %0 - 5
+	cmp	%%src, %5
+	je	%%stop
+      %rotate 1
+    %endrep
+	cmp	%%src, %5
+      %define ec_ ne
+  %else
+	cmp	%%src, %5
+    %ifidni   %4,[]
+	jb	%%stop
+      %define ec_ be
+    %elifidni %4,[!]
+	jb	%%cont
+      %define ec_ a
+    %elifidni %4,()
+	jbe	%%stop
+      %define ec_ b
+    %elifidni %4,(!)
+	jbe	%%cont
+      %define ec_ ae
+    %elifidni %4,-[]
+	jl	%%stop
+      %define ec_ le
+    %elifidni %4,-[!]
+	jl	%%cont
+      %define ec_ g
+    %elifidni %4,-()
+	jle	%%stop
+      %define ec_ l
+    %elifidni %4,-(!)
+	jle	%%cont
+      %define ec_ ge
+    %else
+      %error "unrecognised combined expression"
+    %endif
+	cmp	%%src, %6
+  %endif
+  %endif
+	%%jc
+  %%skip:
+%endmacro
+
+%define AND ,&&,
+%define OR  ,||,
+
+; Evaluate an and/or operation (left to right).
+%macro eop_ 3-*.nolist
+  %define %%dir %1
+  %define %%lbl %2
+  %define %%c %0
+  %ifidn %1,-
+    %define %%cont %%skip
+    %define %%stop %2
+  %else
+    %define %%cont %2
+    %define %%stop %%skip
+  %endif
+  %rep %0
+    %ifidn %4,||
+	eval_ +, %%cont, %3
+    %elifidn %4,&&
+	eval_ -, %%stop, %3
+    %else
+      %exitrep
+    %endif
+    %rotate 2
+    %assign %%c %%c - 2
+  %endrep
+  %if %%c == 3
+	eval_ %%dir, %%lbl, %3
+  %elif %%c == 4
+	eval_ %%dir, %%lbl, %3, %4
+  %else
+	eval_ %%dir, %%lbl, %3, %4, %5
+  %endif
+  %%skip:
+%endmacro
+
+
+; ==========
+; Interrupts
+; ==========
+
+; Perform an INT, setting AH or AX or AH & AL.
+%imacro intr 1-3.nolist
+  %if %0 == 2
+    %ifnum %2
+      %if %2 < 100h
+	mov	ah, %2
+      %else
+	mov	ax, %2
+      %endif
+    %else
+	mov	ah, %2
+    %endif
+  %elif %0 == 3
+    %ifnum %2
+    %ifnum %3
+	mov	ax, hl(%2,%3)
+      %define %%num
+    %endif
+    %endif
+    %ifndef %%num
+	mov	ah, %2
+	mov	al, %3
+    %endif
+  %endif
+	int	%1
+%endmacro
+
+%idefine dos  intr 21h,
+%idefine vid  intr 10h,
+%idefine disk intr 13h,
+%idefine kbd  intr 16h,
+%idefine amis intr 2dh,
+%idefine mpx  intr 2fh,
+%idefine mous intr 33h, 0,
+%idefine exit intr 21h, 4ch,
+%idefine win  intr 2fh, 16h,
+
+; Use DOS to print a character.
+%imacro prch. 0-1.nolist
+  %if %0 == 1
+	mov	dl, %1
+  %endif
+	int	21h
+%endmacro
+
+%imacro prch 0-1.nolist
+	mov	ah, 2
+	prch.	%1
+%endmacro
+
+; Use DOS to print a dollar-terminated string.
+%ifndef STR$
+  %define STR$ .data
+%endif
+
+%imacro prnt$. 0-1+.nolist
+  %if %0 == 1
+    %ifnstr %1
+    %ifnnum %1
+	mov	dx, %1
+      %define %%lbl
+    %endif
+    %endif
+    %ifndef %%lbl
+	[section STR$]
+      %%str:	d$ %1
+	__SECT__
+	mov	dx, %%str
+    %endif
+  %endif
+	int	21h
+%endmacro
+
+%imacro prnt$ 0-1+.nolist
+	mov	ah, 9
+	prnt$.	%1
+%endmacro
+
+; Translate C escapes inside a string. It's quite slow, though, so it
+; has to be explicitly activated by defining CSTR.
+%macro dc_ 1.nolist
+  %strlen %%len %1
+  %assign %%i 1
+  %rep %%len
+    %substr %%ch %1 %%i
+    %if %%ch == '\'
+      %assign %%i %%i + 1
+      %substr %%ch %1 %%i
+      %if   %%ch == 'n'
+	db 13,10
+      %elif %%ch == 't'
+	db 9
+      %elif %%ch == 'b'
+	db 8
+      %elif %%ch == 'r'
+	db 13
+      %if   %%ch == 'l'
+	db 10
+      %elif %%ch == 'e'
+	db 27
+      %elif %%ch == 'a'
+	db 7
+      %elif %%ch == '0'
+	db 0
+      %else
+	db %%ch
+      %endif
+    %elif %%ch == "'"
+	db "'"
+    %else
+	db %%ch
+    %endif
+    %assign %%i %%i + 1
+    %if %%i > %%len
+      %exitrep
+    %endif
+  %endrep
+%endmacro
+
+%imacro dc 1-*.nolist
+  %rep %0
+    %ifndef CSTR
+	db	%1
+    %elifnstr %1
+	db	%1
+    %else
+	dc_	%1
+    %endif
+    %rotate 1
+  %endrep
+%endmacro
+
+; Define string types.
+%imacro dz 0-1+.nolist
+	dc	%1
+	db	0
+%endmacro
+
+%imacro d$ 0-1+.nolist
+	dc	%1
+	db	'$'
+%endmacro
+
+%imacro dln 0-1+.nolist
+	dc	%1
+	db	13,10
+%endmacro
+
+%imacro dlz 0-1+.nolist
+	dc	%1
+	db	13,10,0
+%endmacro
+
+%imacro dl$ 0-1+.nolist
+	dc	%1
+	db	13,10,'$'
+%endmacro
+
+[list +]

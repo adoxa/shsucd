@@ -1,0 +1,4116 @@
+;
+;****************************************************************************
+; SHSUCDX Version 3.00
+; Jason Hood, September to November, 2004.
+; jadoxa@yahoo.com.au
+; http://shsucdx.adoxa.cjb.net/
+;
+; v3.01, March, 2005.
+; v3.02, April/May, 2005.
+;
+;*** Begin original comments (abridged):
+;***************************************************************************
+;
+; SHSUCDX Version 1.4b
+; (c) John H. McCoy, October 2000
+; csc_jhm@shsu.edu
+;
+;     SHSUCDX is an un-loadable CD-ROM redirector substitute for MSCDEX.
+;	 Version 1.1a supports up to 10 CD drives.  Each drive is single
+;	 sector buffered and the last 10 directory entries are cached.
+;	 This version finally fixes (I hope) a problem with handling some
+;	 directory entries.  It has also been changes to handle lower case
+;	 characters in directory and file names.  LC characters are not
+;	 valid, but some NT/Win95 mastering programs put them in.
+;
+;	 Approx 17K of RAM is needed to install SHSUCDX.  The resident size
+;	 for a single drive is less than 11K.  Each additional drive increases
+;	 the resident size by 2500 bytes.  Multiple drivers are supported.
+;	 The driver name, drive letter, drive unit and number of drives from
+;	 each driver can be specified on the command line.
+;
+;	 SHSUCDX does not attempt to read the CD ROM until an access request
+;	 is made.  Thus, the CD drive does not have to be ready when the
+;	 redirector is loaded.	If more than 7 seconds elapse between access
+;	 requests a media check is made.  The buffers and cache are flushed
+;	 and the CD is re-read only if the driver reports a media change.
+;	 This reduces network traffic but can result in missing a "fast"
+;	 media change on a local drive.
+;
+;	 When SHSUCDX unloads it marks the drives it used as invalid.
+;
+;     SHSUCDX has been run with MS-DOS 4, 5, 6 and 7 stand-alone, under
+;	 Windows 3.1, and in a specific DOS window under OS2.
+;
+;     A CD-ROM driver which supports the CD-ROM extensions must be loaded
+;	 before loading SHSUCDX.  By default, SHSUCDX looks for a driver
+;	 named SHSU-CDN.
+;
+;   SHSUCDX is a copyright reserved, free use program.
+;
+;   (c)John H. McCoy, 1994 - 2000 Sam Houston St. Univ., TX 77341-2206
+;
+; ***************************************************************************
+;
+;    Microsoft has not documented the redirector functions.  I have borrowed
+;      from and am particularly indebted to the authors of:
+;
+;      A CD-ROM redirector for HighSierra and ISO 9660 disks.
+;	  Jim Harper, DDJ, March 1993
+;      Inside the ISO-9660 Filesystem Format
+;	  William and Lynne Jolitz, DDJ, December 1992
+;      Undocumented DOS, Chapter 4.
+;	  Andrew Schulman, et. al, Addison Wesley, 1990
+;
+;    Written for MASM 6.0b.  C functions compiled with MSC 5.1
+;****************************************************************************
+;*** End original comments.
+;
+; This version is a rewrite of the above version and my version 2 into NASM.
+; The resident size is now less than 6K for one drive.
+; Acknowledgement to Ralf Brown's Interrupt List.
+;
+;****************************************************************************
+;
+
+
+;%define i8086		; If defined no 386 instructions will be used.
+;%define CDROOT 	; If defined use the CD root form of "\\D.\A.\".
+%define HS		; If defined include High Sierra support.
+%define JOLIET		; If defined use Joliet (required by DOSLFN 0.40a).
+%define CDIMAGE 	; If defined enables using an image on a CD.
+
+%include "nasm.mac"
+%include "undoc.mac"
+%include "cdrom.mac"
+
+%ifdef i8086
+		cpu	8086
+%else
+		cpu	386
+%endif
+
+%define A_SUBDIR	10h
+
+; Redirector equates
+%define REDIR		11h		; make these defines so mpx can
+%define InstallChk	00h		;  combine into one word
+ChDir		equ	05h		; these must be EQU for creating
+Close		equ	06h		;  the table
+Read		equ	08h
+GetSpace	equ	0ch
+GetAttr 	equ	0fh
+Open		equ	16h
+FindFirst	equ	1Bh
+FindNext	equ	1Ch
+Seek		equ	21h
+PathName	equ	23h
+EOpen		equ	2eh
+NoRedir 	equ	0ffh		; equate required for table terminator
+
+; MSCDEX equates
+%define MSCDEX		15h
+%define MSCDEX_Q	0DADAh		; Query
+%define MSCDEX_R	0ADADh		; Return
+
+; SMARTDrive equate
+%define SMARTDRV_Q	0BABEh
+
+; DOSLFN equates
+%define DOSLFN_Q	9877h
+%define DOSLFN_R	8766h
+
+; Return codes
+%define RC_CPU		255		; 386 required
+%define RC_DOS		254		; unsupported version of DOS
+%define RC_INSTALLED	253		; already installed
+%define RC_CD		252		; can't find CD driver
+%define RC_UNIT 	251		; unit doesn't exist
+%define RC_LETTER	250		; no available drive letter
+%define RC_DRIVE	249		; no drives assigned
+%define RC_MEM		248		; not enough memory
+%define RC_UNINST	247		; can't uninstall
+%define RC_OPT		246		; problem with option
+%define RC_OK		0		; help, tilde/ro, successful uninstall
+					; 1..32 first drive number (A=1)
+
+%assign COMPILE_FLAG hl(2,0)
+%ifdef i8086
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(0)
+%endif
+%ifdef CDROOT
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(1)
+%endif
+%ifdef HS
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(2)
+%endif
+%ifdef JOLIET
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(3)
+%endif
+%ifdef CDIMAGE
+  %assign COMPILE_FLAG COMPILE_FLAG | bit(4)
+%endif
+
+
+%define MAXDRIVES	10
+%define CACHEENTRIES	10
+%define CACHESIZE	CACHEENTRIES * DirEnt_size
+%define SECTORSIZE	2048
+%define SECTORSHIFT	11
+
+
+		org	100h
+		jmp	Begin
+
+; Credits
+		db	13		; overwrite JMP if TYPEd
+CopyrightMsg
+dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
+dln "Version 3.02 (5 May, 2005). Freeware.        | John H. McCoy, October 2000,"
+dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
+		db	26
+
+CritInit:
+	; zero out the sector buffers (security and directory scan sentinel)
+	mov	di, [Drive+DrvEnt.Bufp]
+	mov	al, 0
+	mov	cx, i(IODatap)
+IODatap iw
+	sub	cx, di
+	rep	stosb
+
+	; initialise the bottom of the stack (to see how much is actually used)
+	mov	di, local_stack
+%ifdef i8086
+	mov	cx, ($-local_stack + 1) / 2
+	mov	ax, 'St'
+	rep	stosw
+%else
+	mov	cx, ($-local_stack + 3) / 4
+	mov	eax, 'Stak'
+	rep	stosd
+%endif
+
+	mov	dx, i(KeepSize)
+KeepSize iw
+	mov	ax, 4cffh	; exit or go TSR
+RC iw
+	dos
+
+
+DriverIndex	dw	Drivers ; initialise here to help the below alignment
+SilentFlag	dflg	off
+
+
+		align	16
+Res_Begin	equ	$-$$+100h - 192*2
+local_stack	equ	$ - 192*2	; stack goes back into the PSP
+throw_sp	equ	$-2
+DriveOfs	dw	0	; EAX, but low word is not needed
+scratch 	dw	0	; used by 8086 code
+_ES		dw	0
+_DI		dw	0
+_SI		dw	0
+DriveNo 	db	0	; BP, preserved separately
+%ifndef CDIMAGE
+ChainFlag
+%endif
+		db	0
+CEH_SP		dw	0	; SP, ignored
+_BX		dw	0
+_DX		dw	0
+_CX		dw	0
+_AX		dw	0
+top_stack	equ	$
+
+_FLAGS		dw	0
+_SP		dw	0
+_SS		dw	0
+
+%ifdef CDIMAGE
+cdxsda_len	equ	($-local_stack) / 2
+%else
+cdxsda_len	equ	0
+%endif
+
+;Old2F		dd	0	; (inlined)
+FN1p		dd	0
+SDBp		dd	0
+DTApp		dd	0
+SAttrp		dw	0
+;Tildes 	dw	0	; 0 truncate names, -1 append tilde (inlined)
+
+%ifdef i8086
+setax		dw	SetAX	; offset for PUSH
+%endif
+
+%ifdef CDIMAGE
+Active		db	1	; 1 not active, 0 active, -1 swapped, -2 nested
+ChainFlag	db	0
+%else
+Active		db	0	; 0 not active, -1 active, -2 nested
+%endif
+
+;FirstDriveNo	db	0	; (inlined)
+;NoDrives	dw	MAXDRIVES ; (inlined)
+ResDrives	db	0	; number of drives available for use
+file_name	times 11 db 0	; FCB name from PathLookup \ expected
+dir_name	times 11 db 0	; FCB name from directory  / consecutively
+%ifdef JOLIET
+Joliet		dflg	off
+%endif
+
+
+; Use BP to access variables, since it's shorter than direct memory access
+; (one byte for displacement, instead of two bytes for address).
+%define BP_(var)	bp+var-top_stack
+
+; Use a MOV instruction to jump one or two bytes.
+%define jmp1	db 0b1h 		; B1 nn    = MOV CL, nn
+%define jmp2	db 0b9h 		; B9 nn nn = MOV CX, nnnn
+
+
+rh_io
+  istruc rhIOCTL
+    at rhIOCTL.Header
+      istruc rh
+	at rh.Length,	db rhIOCTL_size
+	at rh.Command,	db rhcmdIOCTL_In
+      iend
+    at rhIOCTL.CBPtr,	dw IoCB_MediaChange
+    at rhIOCTL.Bytes,	dw 2
+  iend
+
+rh_rl
+  istruc rhReadLong
+    at rhReadLong.Header
+      istruc rh
+	at rh.Length,	db rhReadLong_size
+	at rh.Command,	db rhcmdReadLong
+      iend
+  iend
+
+; IOCTL-in control blocks
+
+IoCB_MediaChange db	9
+     MediaChange db	0	; 0    don't know
+				; 1    not changed
+				; 0FFh media changed
+
+
+CD_Table	dw	CD_Number	; 00 Get number of CD-ROM drives
+		dw	CD_Device	; 01 Get CD-ROM drive device list
+		dw	CD_CAB		; 02 Get copyright file ID
+		dw	CD_CAB		; 03 Get abstract file ID
+		dw	CD_CAB		; 04 Get bibliographic file ID
+		dw	CD_VTOC 	; 05 Read VTOC
+		dw	CD_unsupported	; 06 Turn debugging on
+		dw	CD_unsupported	; 07 Turn debugging off
+		dw	CD_Read 	; 08 Absolute disk read
+		dw	CD_unsupported	; 09 Absolute disk write
+		dw	CD_unsupported	; 0A Reserved
+		dw	CD_Check	; 0B CDROM drive check
+		dw	CD_Version	; 0C MSCDEX version
+		dw	CD_Letters	; 0D Get CD-ROM drive letters
+%ifdef JOLIET
+		dw	CD_VolDesc	; 0E Get/Set vol. descriptor preference
+%else
+		dw	CD_Unsupported	; 0E Get/Set vol. descriptor preference
+%endif
+		dw	CD_DirEntry	; 0F Get directory entry
+		dw	CD_Request	; 10 Send device request
+
+; Redirector table (needs to be ordered by number).
+%macro dr 1.nolist
+	db	%1
+	dw	RD_%1
+%endmacro
+
+RD_Table	dr	ChDir
+		dr	Close
+		dr	Read
+		dr	GetSpace
+		dr	GetAttr
+		dr	Open
+		dr	FindFirst
+		dr	FindNext
+		dr	Seek
+		dr	EOpen
+		dr	NoRedir
+
+
+Installed:
+	push	bp
+	 mov	bp, sp
+	 ifw [bp+fr_Parm1] ,e, MSCDEX_Q
+%ifdef i8086
+	  movw	[bp+fr_Parm1], MSCDEX_R
+%else
+	  rolw	[bp+fr_Parm1], 4
+%endif
+	 fi
+	 if bx ,e, SMARTDRV_Q
+	  mov	bx, COMPILE_FLAG
+	  ld	es, cs
+	  mov	di, Drive
+	  mov	cx, [cs:NoDrives]
+	  mov	dx, DrvEnt_size
+	 fi
+	 mov	al, 0ffh
+	pop	bp
+	iret
+
+New2F
+	; is this call for us?
+	jif	ah ,e, REDIR,  TestInstall
+	jif	ah ,e, MSCDEX, Main
+
+Chain:
+	ijmpf	Old2F			; chain out
+
+TestInstall:
+	jif	al ,e, PathName, Chain	; called a lot, so handle it directly
+	jif	al ,e, InstallChk, Installed
+
+Main:
+	; save registers and switch to local stack
+	push	ds
+
+	ld	ds, cs
+	cld
+	decb	[Active]		;  1 -->  0 == PE, PL
+	jpo	nested			;  0 --> -1 == PE, NG
+%ifdef CDIMAGE				; -1 --> -2 == PO
+	if. s,	call Swapcdx
+%endif
+
+	push	bp
+
+	mov	bp, sp
+	mov	bp, [bp+2+fr_Flags]
+	mov	[_FLAGS], bp
+	sss	sp, _SP
+
+	cli
+	ld	ss, cs
+	mov	sp, top_stack
+	;sti
+
+	mov	bp, sp
+	pusha.
+%ifdef i8086
+	save	es,ax,ax
+%else
+	save	es,eax
+%endif
+
+	call	Main2F
+
+	cli
+	incb	[BP_(Active)]		; none of the below affects the flags
+
+	; restore registers and switch back to caller's stack
+	restore
+	popa.
+
+	mov	sp, [_FLAGS]
+	lss.	bp, _SP
+	mov	[bp+2+fr_Flags], sp
+%ifdef i8086
+	mov	sp, bp
+	pop	bp
+%else
+	leave
+%endif
+
+%ifdef CDIMAGE
+	if. z,	call Swapcdx		; -1 --> 0 == ZR
+%endif					;  0 --> 1 == NZ
+
+	decb	[ChainFlag]
+cexit:
+	pop	ds
+	;sti
+	js	Chain
+	iret
+
+nested:
+	incb	[Active]
+	jmp	cexit
+
+%ifdef CDIMAGE
+Swapcdx uses	es,si,di,cx
+	mov	si, cdxsda
+	mov	di, local_stack
+	if. s,	xchg si, di
+	ld	es, cs
+	mov	cx, cdxsda_len
+	rep	movsw
+	return
+%endif
+
+
+Main2F
+	movb	[BP_(ChainFlag)], 1
+
+drdos:	cmp	ah, MSCDEX		; (replaced with CALL if using DR-DOS)
+	if e
+	 ; Handle the MSCDEX calls
+	 jif	al ,a, 10h, CD_unsupported
+	 cbw
+	 add	al, al			; clears carry
+	 xchg	bx, ax
+%ifdef i8086
+	 pushw	[BP_(setax)]
+%else
+	 push	SetAX			; alternate return address
+%endif
+	  call	[CD_Table+bx]
+	 pop	ax
+	else
+	 ; Handle redirector calls
+	 for	bx, RD_Table, ne
+	  cmp	[bx], al
+	  lea	bx, [bx+3]
+	  ja	ChainExit
+	 next
+	 call	[bx-2]
+SetAX:
+	 mov	[_AX], ax
+	fi
+	cfbit	[BP_(_FLAGS)]
+	ret
+
+RD_NoRedir:
+	pop	ax			; discard redirector return address
+ChainExit:
+	decb	[BP_(ChainFlag)]	; just chain out. Novell doesn't
+MExit:					; like it if you call it an error
+	ret
+
+
+Err0F:	mov	al, INVALIDDRIVE
+	jmp2
+CD_unsupported
+Err01:	mov	al, INVALIDFUNC
+	jmp2
+Err03:	mov	al, PATHNOTFOUND
+	jmp2
+Err02:	mov	al, FILENOTFOUND
+	jmp2
+Err15:	mov	al, DRIVENOTREADY
+ErrAL:	cbw
+	mov	sp, throw_sp
+	stc
+	jmp	SetAX
+
+
+; Determine if the various redirector functions are meant for us.
+
+;  In: Nothing
+; Out: ES:BX -> filename
+RedirForUsFN1:
+	les	bx, [BP_(FN1p)]
+
+;  In: ES:BX -> filename
+; Out: Nothing
+RedirForUsDrive:
+	mov	al, [es:bx+DriveOff]
+	sub	al, 'A'
+	jmp	RedirForUs
+
+;  In: ES:DI -> SFT
+; Out: Nothing
+RedirForUsSFT:
+	mov	al, [es:di+SFT.Flags]
+
+;  In: AL := drive letter with flags
+; Out: Nothing
+RedirForUsFlag:
+	and	al, 3fh 		; just want drive number
+
+RedirForUs:
+	call	ForUs
+	cmp	al, 0fh
+	jb	MExit			; AL = 0, so for us, return
+NotForUs:
+	pop	ax			; Discard return address
+	je	RD_NoRedir		; Invalid drive, not for us
+	push	ax			; Put return address back
+
+	; Drive not ready - invoke critical error handler
+	incb	[BP_(Active)]		; If aborted it won't be reset
+	save	es,bp,si,di		; NB: does not reset swap data,
+	 mov	[BP_(CEH_SP)], sp	;     abort will *really* abort
+	 lss.	sp, BP_(_SP)		; Need to use the DOS stack
+	 mov	ah, 00011110b		; Disk data error, allow retry & fail
+	 mov	al, [DriveNo]
+	 push	ax			; Int 24 error code on stack
+	 mov	di, 2			; Drive not ready
+	 zero	bp			; BP:SI driver header (not needed)
+	 zero	si
+	 mpx	1206h			; Invoke Critical Error
+	 ld	ss, cs
+	 mov	sp, [CEH_SP]
+	restore
+	decb	[BP_(Active)]
+	jif	al ,ne, 1, Err15	; Didn't retry, drive not ready
+	mov	al, [DriveNo]
+	jmp	RedirForUs
+
+
+;+
+; FUNCTION : SetForUs
+;
+;	Determine if the drive is one of ours.
+;
+; Parameters:
+;	CL := drive number (0=A)
+;
+; Returns:
+;	If for us:
+;	   DriveNo and DriveOfs set appropriately
+;	   BX restored to client's value
+;	Does not return if not for us
+;
+; Destroys:
+;	AX,CX
+;-
+SetForUs
+	xchg	ax, cx
+	call	ForUs
+	jnz	ErrAL
+	mov	bx, [BP_(_BX)]
+	ret
+
+
+;+
+; FUNCTION : SetDDD
+;
+;	Search for matching drive and set DriveOfs and DriveNo.
+;
+; Parameters:
+;	CL := drive number (0=A)
+;
+; Returns:
+;	ZR if drive is one of ours
+;	   DriveOfs and DriveNo set
+;	   BX := DriveOfs
+;	   CX != 0
+;	NZ if not our drive
+;	   CX = 0
+;	   BX destroyed
+;
+; Destroys:
+;	AX
+;-
+SetDDD
+	mov	ax, [NoDrives]
+	mov	bx, Drive
+	xchg	cx, ax
+	inc	cx			; clear zero if no drives
+	jmp	.begin
+	repeat
+	 break	[bx+DrvEnt.No] ,e, al
+	 add	bx, DrvEnt_size
+.begin: next
+	mov	[BP_(DriveOfs)], bx
+	mov	[DriveNo], al
+	ret
+
+
+;+
+; FUNCTION : ForUs
+;
+;	Determine if the drive is one of ours and initialise it if so.
+;
+; Parameters:
+;	AL := drive number (0=A)
+;
+; Returns:
+;	ZR if successful
+;	   AL := 00h
+;	NZ if failed
+;	   AL := 0fh if invalid drive (not for us)
+;		 15h if drive not ready
+;
+; Destroys:
+;	CX
+;-
+ForUs	uses	bx,si,di
+	xchg	cx, ax
+	call	SetDDD
+	mov	al, INVALIDDRIVE
+	retif	nz
+
+	; Force re-init if it's been a while and the media has changed.
+	call	GetTicks
+	sub	ax, [bx+DrvEnt.LastAccess]
+	if ax ,ae, 128			; approx. 7 seconds
+	 save	es,bx
+	  ld	es, ds
+	  mov	bx, rh_io
+	  call	DDCall
+	 restore
+	 decb	[BP_(MediaChange)]	; cmp MediaChange, not changed
+	 cmovby ne, [bx+DrvEnt.Type], UNKNOWN
+	fi
+
+	; May need to initialize this drive
+	ifb [bx+DrvEnt.Type] ,e, UNKNOWN
+	 orw	[bx+DrvEnt.BufBlkNo+2], -1
+	 call	CdReadPVD
+	 mov	al, DRIVENOTREADY
+	 retif	nz
+	 call	InitCD
+	fi
+
+	call	GetTicks
+	mov	[bx+DrvEnt.LastAccess], ax
+	zero	al
+	return
+
+
+;+
+; FUNCTION : GetTicks
+;
+;	Return the clock ticks (low word).
+;
+; Parameters:
+;	None.
+;
+; Returns:
+;	AX := clock ticks
+;
+; Destroys:
+;	None.
+;-
+GetTicks
+	uses	ds
+%ifdef i8086
+	zero	ax
+	mov	ds, ax
+%else
+	ld	ds, 0
+%endif
+	mov	ax, [46ch]
+	return
+
+
+;+
+; FUNCTION : InitCD
+;
+;	Initialise the CD structures.
+;
+; Parameters:
+;	BX -> drive structure
+;
+; Returns:
+;	Nothing.
+;
+; Destroys:
+;	EAX,CX,SI,DI
+;-
+InitCD
+	; Flush the directory cache
+	lea	si, [bx+DrvEnt.RootEnt]
+	mov	cx, ISO9660
+	for	di, [si+DirEnt.Forw], {,ne, si}
+	 mov	[di+DirEnt.FName], ch
+	 mov	di, [di+DirEnt.Forw]
+	next
+
+	mov	di, [bx+DrvEnt.Bufp]
+%ifdef i8086
+	ifw. {[di+isoVol.ID] ,e, 'CD'},\
+	 cmpw	[di+isoVol.ID+2], '00'
+%else
+	cmpd	[di+isoVol.ID], 'CD00'  ; '1' is assumed to follow
+%endif
+%ifndef HS
+	retif	ne
+%else
+	je	.iso
+ %ifdef i8086
+	retifw	[di+hsVol.ID]	,ne, 'CD'
+	retifw	[di+hsVol.ID+2] ,ne, 'RO'
+ %else
+	retifd	[di+hsVol.ID] ,ne, 'CDRO' ; 'M' is assumed to follow
+ %endif
+
+	; High Sierra
+	dec	cx			; HIGHSIERRA = ISO9660 - 1
+	lea	si, [di+hsVol.DirRec]
+	lea	di, [di+hsVol.VolID]
+	jmp	.copy
+%endif
+
+.iso:	; ISO 9660 (ECMA-119)
+	lea	si, [di+isoVol.DirRec]
+	lea	di, [di+isoVol.VolID]
+.copy:
+	mov	[bx+DrvEnt.Type], cl
+	decw	[di+28h+2]		; VolSizeLSB (relative to VolID)
+	cmov	ax, ns, -1, [di+28h]
+	mov	[bx+DrvEnt.VolSize], ax
+
+	save	es,si
+	 ld	es, ds
+	 push	di
+	  lea	di, [bx+DrvEnt.RootEnt] ; also VLabel
+	  mov	al, A_SUBDIR
+	  call	DirFieldCopy
+	 pop	si
+	 save	di
+	  call	mov11b
+	 restore
+	restore
+
+%ifdef JOLIET
+	jnflg	[BP_(Joliet)], .root
+ %ifdef HS
+	jifb	[bx+DrvEnt.Type] ,e, HIGHSIERRA, .root
+ %endif
+	call	.root
+	; Check for Joliet
+ %ifdef i8086
+	mov	ax, 11h
+	cwd
+ %else
+	zero	eax
+	mov	al, 11h
+ %endif
+	forb	[si-isoVol.DirRec],,nz,+ ; -1 is terminator ID
+	 call	CdReadBlk
+	 break nz
+	 ifb [si-isoVol.DirRec] ,e, 2	; SVD
+	 andifw [si+isoVol.Unused3-isoVol.DirRec] ,e, '%/' ; escape sequence
+	  xchg	ax, cx
+	  mov	al, [si+isoVol.Unused3+2-isoVol.DirRec]
+	  jif	al ,e, {'@','C','E'}, .jol
+	  xchg	ax, cx
+	 fi
+	 inc	ax
+	next
+	return
+
+.jol:	mmovd	di+DirEnt.FSize, si+Sizeoff
+%endif
+.root:	mmovd	di+DirEnt.ParentBlk, si+Blkoff
+setblk
+	mmovd	di+DirEnt.BlkNo
+%ifndef JOLIET
+InitCD.ret:
+%endif
+	ret
+
+
+;+
+; FUNCTION : Redirector functions
+;
+;	Entry points to the various redirector functions.
+;
+; Parameters:
+;	BX destroyed (but restored by the RedirForUs... fns)
+;	All others as per the function
+;
+; Returns:
+;	AX & CF according to function.
+;-
+
+; 05h:	Change directory
+;  In:	SS = DOS DS
+;	SDA first filename pointer -> fully-qualified directory name
+;	SDA CDS pointer -> current directory structure for drive with dir
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   CDS updated with new path
+RD_ChDir
+	call	RedirForUsFN1
+	call	LookupDir
+	jnz	RD_exit
+	jmp	Err03
+
+
+; 06h:	Close file
+;  In:	ES:DI -> filled-in SFT (assumed to point at SDA's current SFT field)
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   SFT updated (redirector must decrement open count, which may be
+;	     done with INT 2F/AX=1208h)
+;	ES:DI must be preserved
+RD_Close
+	call	RedirForUsSFT
+	decw	[es:di+SFT.RefCnt]
+	if. s,	incw [es:di+SFT.RefCnt] ; assume count < 32768
+RD_exit:
+	zero	ax			; clears carry
+	ret
+
+
+%ifdef i8086
+; Shift DX:AX SECTORSHIFT bits to the right.
+rshift
+	repeat SECTORSHIFT
+	 shr	dx, 1
+	 rcr	ax, 1
+	next
+	ret
+%endif
+
+
+; 08h:	Read from file
+;  In:	ES:DI -> SFT
+;		 SFT DPB field -> DPB of drive containing file
+;	CX = number of bytes
+;	SS = DOS DS
+;	SDA DTA field -> user buffer
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   CX = number of bytes read (0000h = end of file)
+;	   SFT updated
+RD_Read
+	call	RedirForUsSFT
+
+	zero	cx
+	xchg	[BP_(_CX)], cx
+	jcxz	RD_exit
+
+%ifdef i8086
+  %define LEN [BP_(scratch)]
+  %macro  NEXT_SEC 0
+	  add	ax, 1
+	  adc	dx, si
+  %endmacro
+
+	ldhl	si,bx, es:di+SFT.FilSiz
+	ldd	es:di+SFT.FilPos
+	sub	bx, ax
+	sbb	si, dx
+	jb	RD_exit 		; Can't read past EOF
+
+	; Chop read back if too long
+	if z AND {cx ,a, bx}
+	 mov	cx, bx
+	 jcxz	RD_exit
+	fi
+	mov	[BP_(scratch)], cx
+
+	; Calculate block with start of data
+	mov	si, ax
+	and	si, SECTORSIZE-1
+	call	rshift
+	add	ax, [es:di+SFT.FBN]
+	adc	dx, [es:di+SFT.FBN+2]
+
+	save	es
+	les	bx, [BP_(DTApp)]
+	les	bx, [es:bx]
+	forw LEN,,nz, -,cx
+	 save	di
+		; [scratch] < SECTORSIZE
+	  jifb	{[BP_(scratch)+1] ,b, 8} OR {si nzr}, .part
+
+	  ; Read complete blocks
+	  mov	di, [BP_(scratch)]
+	  mov	cl, SECTORSHIFT
+	  shr	di, cl
+	  xchg	cx, di
+	  call	CdReadLong
+	  xchg	cx, di
+	  jnz	.Err15			; assume drive not ready
+	  add	ax, di			;  but could use general failure
+	  adc	dx, si			; SI = 0
+	  shl	di, cl
+	  mov	cx, di
+	  jmp	.upd
+
+.Err15:  jmp	Err15
+
+%else ;386
+  %define LEN	   dx
+  %define NEXT_SEC inc eax
+
+	ldd	es:di+SFT.FilSiz
+	sub	eax, [es:di+SFT.FilPos]
+	jbe	RD_exit 		; Can't read past EOF
+
+	; Chop read back if too long
+	if {eax ,&!, 0ffff0000h} AND {cx ,a, ax}
+	 xchg	cx, ax
+	fi
+	mov	dx, cx
+
+	; Calculate block with start of data
+	mov	eax, [es:di+SFT.FilPos]
+	mov	si, ax
+	shr	eax, SECTORSHIFT
+	and	si, SECTORSIZE-1
+	add	eax, [es:di+SFT.FBN]
+
+	save	es
+	les	bx, [BP_(DTApp)]
+	les	bx, [es:bx]
+	for LEN,,nz, -,cx
+	 save	edi
+
+	  jif	{dh ,b, 8} OR {si nzr}, .part	; DX < SECTORSIZE
+
+	  ; Read complete blocks
+	  movzx edi, dx
+	  shr	di, SECTORSHIFT
+	  mov	cx, di
+	  call	CdReadLong
+	  jnz	.Err15
+	  add	eax, edi
+	  shl	cx, SECTORSHIFT
+	  jmp	.upd
+
+.Err15:  pop	edi
+	 jmp	Err15
+%endif
+
+.part:
+	  ; Partial block
+	  call	CdReadBlk
+	  jnz	.Err15
+	  mov	cx, SECTORSIZE
+	  sub	cx, si
+	  cmov {cx ,ae, LEN}, cx, LEN
+	  save	cx
+	   mov	di, [BP_(DriveOfs)]
+	   add	si, [di+DrvEnt.Bufp]
+	   mov	di, bx
+	   rep	movsb
+	  restore
+	  zero	si
+	  NEXT_SEC
+.upd:
+	 restore
+	 pop	ds
+	 push	ds
+	 add	[di+SFT.FilPos],   cx
+	 adc	[di+SFT.FilPos+2], si	; SI = 0
+	 ld	ds, cs
+	 add	bx, cx
+	 add	[BP_(_CX)], cx
+	next
+	restore
+
+	zero	ax			; clears carry
+	ret
+
+
+; 0ch:	Get disk information
+;  In:	ES:DI -> current directory structure for desired drive
+; Out:	CF clear if data valid
+;	   AL = sectors per cluster
+;	   AH = media ID byte
+;	   BX = total clusters
+;	   CX = bytes per sector
+;	   DX = number of available clusters
+;	CF set if data invalid
+RD_GetSpace
+	mov	bx, di
+	call	RedirForUsDrive
+	mov	bx, [BP_(DriveOfs)]
+	movw	[BP_(_CX)], SECTORSIZE
+	mmovw	[_BX], [bx+DrvEnt.VolSize] ; # clusters on drive
+	zero	ax
+	mov	[_DX], ax		; # clusters available
+	inc	ax			; # sectors/cluster & Media ID
+	;clc				; cleared by zero
+	ret
+
+
+; 0fh:	Get file's attributes and size
+;  In:	SS = DOS DS
+;	SDA first filename pointer -> fully-qualified name of file
+;	SDA CDS pointer -> current directory structure for drive with file
+;		(offset = FFFFh if null CDS [net direct request])
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   AX = file attributes
+;	   BX:DI = file size
+;	   CX = time stamp of file
+;	   DX = date stamp of file
+RD_GetAttr
+	call	RedirForUsFN1
+	call	Lookup
+	retif	c
+	add	si, DirEnt.FTime
+	lodsw
+	mov	[_CX], ax
+	lodsw				; DirEnt.FDate
+	mov	[_DX], ax
+	lodsw				; skip DirEnt.Back
+	lodsw				; DirEnt.FSize
+	mov	[_DI], ax
+	lodsw
+	mov	[_BX], ax
+	mov	al, [si+DirEnt.Fattr - DirEnt.FSize-4]
+	cbw
+	return
+
+
+; 2eh:	Extended open/create
+;  In:	ES:DI -> uninitialized SFT for file
+;	STACK: WORD file attribute for created/truncated file
+;			low byte = file attributes
+;			high byte = 00h normal create/open, 01h create new file
+;	SDA first filename pointer -> fully-qualified filename
+;	SDA extended file open action = action code
+;	SDA extended file open mode = open mode for file
+; Out:	CF set on error
+;	   AX = error code
+;	CF clear if successful
+;	   CX = result code
+;		01h file opened
+;		02h file created
+;		03h file replaced (truncated)
+;	   SFT initialized (except handle count, which DOS manages itself)
+RD_EOpen
+	call	RedirForUsFN1
+	add	bx, 2e1h - 9eh		; extended open mode (in the SDA)
+	jifb	[es:bx-4],&,2, no_open	; extended open action - replace
+	jmp	test_write
+
+
+; 16h:	Open file
+;  In:	ES:DI -> uninitialized SFT
+;	SS = DOS DS
+;	SDA first filename pointer -> fully-qualified name of file to open
+;	STACK: WORD file access and sharing modes
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   SFT filled (except handle count, which DOS manages itself)
+;	STACK unchanged
+RD_Open
+	call	RedirForUsFN1
+	les	bx, [BP_(_SP)]
+	add	bx, 2+fr_Parm1		; open mode (on the stack)
+test_write:
+	tbit	[es:bx], 0		; open for write
+no_open:
+	mov	al, ACCESSDENIED
+	jnz	ErrAL
+
+	; Look up filename
+	les	bx, [BP_(FN1p)]
+	call	Lookup
+	retif	c
+
+	; Gotta be a file, not a dir
+	jifb	[si+DirEnt.Fattr] ,&, A_SUBDIR, Err02
+
+	; Fill in SFT
+	mov	es, [BP_(_ES)]
+	add	di, SFT.Name
+	call	mov11b			; DirEnt.FName
+	sub	di, SFT.Name+11 - SFT.Mode
+	orb	[es:di], 2
+	scasw				; DI += 2
+	movsb				; SFT.DirAttrib = DirEnt.Fattr
+	mov	ax, 8040h
+	or	al, [DriveNo]
+	stosw				; SFT.Flags
+	add	di, SFT.HHMMSS - SFT.Flags-2
+	add	si, DirEnt.FTime - DirEnt.Fattr-1
+	movsw				; SFT.HHMMSS = DirEnt.FTime
+	movsw				; SFT.YYMMDD = DirEnt.FDate
+	lodsw				; SI += 2
+	movsw				; SFT.FilSiz = DirEnt.FSize
+	movsw
+	zero	ax
+	stosw				; SFT.FilPos
+	stosw
+	sub	si, DirEnt.FSize+4 - DirEnt.BlkNo
+	movsw				; SFT.FBN = DirEnt.BlkNo
+	movsw
+	;clc				; cleared by SUB
+	return
+
+
+; 1bh:	Findfirst
+;  In:	SS = DS = DOS DS
+;	[DTA] = uninitialized 21-byte findfirst search data
+;	SDA first filename pointer -> fully-qualified search template
+;	SDA CDS pointer -> current directory structure for drive with file
+;	SDA search attribute = attribute mask for search
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   [DTA] = updated findfirst search data
+;		   (bit 7 of first byte must be set)
+;	   [DTA+15h] = standard directory entry for file
+RD_FindFirst
+	call	RedirForUsFN1
+	call	PathLookup
+
+	; Fill in the SDB
+	les	di, [BP_(SDBp)]
+	mov	al, [DriveNo]
+	or	al, 0c0h
+	stosb				; SDB.DriveLet
+	call	DirSize
+	push	cx
+	 mov	si, file_name
+	 call	mov11b			; SDB.TemPlate
+	 mov	si, [BP_(SAttrp)]
+	 es
+	 movsb				; SDB.SAttr
+	 ; Skip the . & .. entries in root dir
+%ifdef i8086
+	 if	ax ,e, [bx+DrvEnt.RootEnt+DirEnt.BlkNo]
+	 andif	dx ,e, [bx+DrvEnt.RootEnt+DirEnt.BlkNo+2]
+%else
+	 if	eax ,e, [bx+DrvEnt.RootEnt+DirEnt.BlkNo]
+%endif
+	  mov	cl, 2			; CX = 0 from mov11b
+	 fi
+	 xchg	ax, cx
+	 stosw				; SDB.Entry
+	 xchg	ax, cx
+%ifdef i8086
+	 stosw				; SDB.ParentBlk
+	 xchg	ax, dx
+	 stosw
+%else
+	 stosd				; SDB.ParentBlk
+%endif
+	pop	ax
+	stosw				; SDB.ParentSize
+
+	mov	al, 8			; volume label attribute
+	if [es:si-1] ,ne, al		; SAttrp
+	 sub	di, SDB.ParentSize+2	; point back to beginning
+	 call	DoFindFirst
+	 mov	al, FILENOTFOUND	; DOS will apparently zero on success
+	 ret
+	fi
+
+	; Handle vol id
+	lea	si, [bx+DrvEnt.RootEnt] ; VLabel
+	call	GetFDB
+	call	mov11b			; FDB.FName
+	stosb				; FDB.Fattr
+	mov	cx, 10
+ten iw
+	mov	al, 0
+	add	di, cx			; clears carry
+	rep	stosb			; FDB.FTime, FDB.Cluster, FDB.FSize
+	ret
+
+
+GetFDB
+	mov	di, [BP_(DTApp)]
+	les	di, [es:di]
+	add	di, SDB_size
+	ret
+
+
+; 1ch:	Findnext
+;  In:	ES:DI -> CDS
+;	ES:DI -> DTA (MSDOS v5.0)
+;	[DTA] = 21-byte findfirst search data
+; Out:	CF set on error
+;	   AX = DOS error code
+;	CF clear if successful
+;	   [DTA] = updated findfirst search data
+;		   (bit 7 of first byte must be set)
+;	   [DTA+15h] = standard directory entry for file
+RD_FindNext
+	les	di, [BP_(SDBp)] 	; get SDBp
+	mov	al, [es:di]		; SDBp->DriveLet (A = 0)
+	call	RedirForUsFlag
+
+	; Make sure we're not continuing an already finished searched.
+	jifw	[es:di+SDB.ParentSize] ,e, -1, DoFindFirst.none
+
+	; Get copy of search template
+	save	ds,es,di
+	 swap	ds, es
+	 lea	si, [di+SDB.TemPlate]
+	 mov	di, file_name
+	 call	mov11b
+	restore
+
+	mov	bx, [BP_(DriveOfs)]
+
+DoFindFirst
+
+%ifdef HS
+	mmovb	[Glob.flag], [bx+DrvEnt.Type]
+%endif
+	mov	al, [es:di+SDB.SAttr]
+	sbit	al, 0			; read-only should always match
+	mov	[Glob.attr], al
+
+	; Search parent dir for matching entry
+	mov	ax, [es:di+SDB.Entry]
+	mov	[Glob.entry], ax
+	and	al, 0c0h
+%ifdef i8086
+	mov	[scratch], ax
+%else
+	xchg	dx, ax
+%endif
+	ldd	es:di+SDB.ParentBlk
+	save	di
+	 mov	di, [es:di+SDB.ParentSize]
+	 movw	[Matchfunc], Glob - Matchfunc-2
+	 call	FindName
+	 mov	bx, di
+	restore
+	lea	di, [di+SDB.Entry]
+%ifdef i8086
+	save	ax
+	 mov	ax, [scratch]
+	 stosw
+	restore
+	stosw				; SDB.ParentBlk
+	xchg	ax, dx
+	stosw
+%else
+	xchg	ax, dx
+	stosw
+	xchg	ax, dx
+	stosd				; SDB.ParentBlk
+%endif
+	xchg	ax, bx
+	stosw				; SDB.ParentSize
+	if nz
+.none:	 stc
+	 mov	ax, NOMOREFILES
+	 ret
+	fi
+
+	; Save start point for next time
+	incb	[es:di-8]		; SDB.Entry
+	xchg	ax, cx
+
+	; Fill in the FDB
+	call	GetFDB
+	;call	DirFieldCopy		; clears carry
+	;clc
+	;ret
+
+
+;+
+; FUNCTION : DirFieldCopy
+;
+;	Copy relevant portions of the directory entry.
+;
+; Parameters:
+;	   AL := attribute
+;	   SI -> directory entry
+;    dir_name := FCB name of file
+;	ES:DI -> where to copy (DirEnt or FDB)
+;
+; Returns:
+;	ES:DI filled (name, attribute, time, date, size)
+;
+; Destroys:
+;	EAX,CX
+;-
+DirFieldCopy
+	uses	di
+	save	si
+	 mov	si, dir_name
+	 call	mov11b			; .FName
+	restore
+	stosb				; .Fattr
+	add	di, DirEnt.FTime - DirEnt.Fattr-1
+	call	ToDosDateTime
+%ifdef i8086
+	stosw
+	xchg	ax, dx
+	stosw
+	scasw				; DI += 2
+	save	si
+	 add	si, Sizeoff
+	 movsw				; .FSize
+	 movsw
+	restore
+%else
+	stosd
+	inc	di			; ToDosDateTime clears carry
+	inc	di			;  but SCASW might not
+	mov	eax, [si+Sizeoff]
+	stosd				; .FSize
+%endif
+	return
+
+
+; 21h:	Seek from end of file
+;  In:	CX:DX = offset (in bytes) from end
+;	ES:DI -> SFT
+;		 SFT DPB field -> DPB of drive with file
+;	SS = DOS DS
+; Out:	CF set on error
+;	   AL = DOS error code
+;	CF clear if successful
+;	   DX:AX = new file position
+RD_Seek
+	call	RedirForUsSFT
+	les	ax, [es:di+SFT.FilSiz]
+	mov	bx, es
+%ifdef i8086
+	add	ax, [BP_(_DX)]
+%else
+	add	ax, dx
+%endif
+	adc	bx, [BP_(_CX)]
+	mov	[BP_(_DX)], bx
+	clc
+	ret
+
+
+;+
+; FUNCTION : MSCDEX functions
+;
+;	Entry points to the various CD-ROM functions.
+;
+; Parameters:
+;	AX = BX
+;	BX corrupted (double the function number)
+;	NC
+;	the rest as per the function
+;
+; Returns:
+;	discard the return address to set the client's AX
+;	client's CF is set accordingly
+;-
+
+; Convenience macro for alternate return address.
+%macro retAX 0.nolist
+	pop	cx
+	ret
+%endmacro
+
+; The following function descriptions refer to the client BX, which is our AX.
+
+; 00h:	Get number of drive letters (installation check)
+;  In:	BX = 0
+; Out:	BX = number of CD-ROM drive letters used
+;	CX = starting drive letter (0=A:)
+CD_Number
+	movw	[BP_(_BX)], i(NoDrives)
+NoDrives iw
+	movw	[BP_(_CX)], i(FirstDriveNo)
+FirstDriveNo iw
+	;clc				; cleared on entry
+	decb	[BP_(_AX)]		; return AL=FF
+	ret
+
+
+; 01h:	Get drive device list
+;  In:	ES:BX -> buffer to hold drive letter list (5 bytes per drive)
+; Out:	buffer filled:
+;	  BYTE	subunit number in driver
+;	  DWORD address of device driver header
+CD_Device
+	xchg	di, ax
+	for0	si, Drive+DrvEnt.DevHdrp, *,[NoDrives], DrvEnt_size - 4
+	 mov	al, [si+DrvEnt.Unit-DrvEnt.DevHdrp]
+	 stosb
+	 movsw
+	 movsw
+	next
+	;clc				; cleared by ADD (in next)
+	ret
+
+
+; 02h:	Get copyright file name
+; 03h:	Get abstract file name
+; 04h:	Get biblio file name
+;  In:	ES:BX -> 38-byte buffer for name of respective file
+;	   CX  = drive number (0=A:)
+; Out:	CF set if drive is not a CD-ROM drive
+;	   AX = 000Fh (invalid drive)
+;	CF clear if successful
+CD_CAB
+	call	SetForUs
+	call	CdReadPVD
+	jnz	CD_VTOC.e15
+
+	mov	di, bx
+	mov	bx, [BP_(DriveOfs)]
+	mov	al, [_AX]
+	mov	si, [bx+DrvEnt.Bufp]
+	; assume ISO
+	mov	cl, 37			; CH zero from CdReadPVD
+	lea	si, [si+isoVol.CopyRightID]
+%ifdef HS
+	ifb [bx+DrvEnt.Type] ,e, HIGHSIERRA
+	 jif	al ,e, 4, .nul		; no such thing for HS
+	 mov	cl, 32
+	 add	si, hsVol.CopyRightID - isoVol.CopyRightID
+	fi
+%endif
+	sub	al, 2
+	mul	cl
+	add	si, ax
+	repeat
+	 lodsb
+	 break	al ,e, ' '
+	 stosb
+	next
+.nul:	zero	al			; clears carry
+	stosb
+	ret
+
+
+; 05h:	Read VTOC
+;  In:	ES:BX -> 2048-byte buffer
+;	   CX  = drive number (0=A:)
+;	   DX  = sector index (0=first volume descriptor,1=second,...)
+; Out:	CF set on error
+;	   AX = error code (15=invalid drive,21=not ready)
+;	CF clear if successful
+;	   AX = volume descriptor type (1=standard,FFh=terminator,0=other)
+CD_VTOC
+%ifdef i8086
+	push	dx
+	call	SetForUs
+	pop	ax
+	cwd
+%else
+	call	SetForUs
+	movzx	eax, dx
+%endif
+	add	al, 10h 		; assume sector index < 240
+	call	CdReadLong1
+.e15:	jnz	Err15			; drive not ready
+	movzx.	ax, [es:bx+isoVol.Type]
+%ifdef HS
+	mov	si, [BP_(DriveOfs)]
+	cmov {byte [si+DrvEnt.Type] ,e, HIGHSIERRA}, al, [es:bx+hsVol.Type]
+%endif
+	retif	al ,le, 1		; assume 0FFh is only one above 7Fh
+	jmp	CD_Read.zero
+
+
+; 08h:	Absolute disk read
+;  In:	ES:BX -> buffer
+;	   CX  = drive number (0=A:)
+;	SI:DI  = starting sector number
+;	   DX  = number of sectors to read
+; Out:	CF set on error
+;	   AL = error code (0Fh invalid drive,15h not ready)
+;	CF clear if successful
+CD_Read
+%ifdef i8086
+	push	dx
+	call	SetForUs
+	pop	cx
+%else
+	call	SetForUs
+	mov	cx, dx
+%endif
+	jcxz	.zero			; set AX to 0 on success
+%ifdef i8086
+	mov	dx, si
+	xchg	ax, di
+%else
+	ld	eax, si,di
+%endif
+	call	CdReadLong
+	jnz	CD_VTOC.e15		; drive not ready
+.zero:	zero	ax
+	retAX
+
+
+; 0Bh:	CDROM check
+;  In:	CX = drive number (0=A:)
+; Out:	BX = ADADh if MSCDEX.EXE installed
+;	AX = support status
+;	  0000h if drive not supported
+;	  nonzero if supported
+CD_Check
+	movw	[BP_(_BX)], MSCDEX_R
+	call	SetDDD
+	xchg	ax, cx
+CD_VTOC.ret:
+	clc
+	retAX
+
+
+; 0Ch:	MSCDEX version
+;  In:	BX = 0000h
+; Out:	BH = major version
+;	BL = minor version
+CD_Version
+	movw	[BP_(_BX)], hl(2,30)
+	ret
+
+
+; 0Dh:	Drive letters
+;  In:	ES:BX -> buffer for drive letter list (1 byte per drive)
+; Out:	buffer filled with drive numbers (0=A:). Each byte corresponds
+;	 to the drive in the same position for function 1501h
+CD_Letters
+	xchg	di, ax
+	for0	si, Drive+DrvEnt.No, *,[NoDrives], DrvEnt_size - 1
+	 movsb
+	next
+	;clc				; cleared by ADD (in next)
+	ret
+
+
+%ifdef JOLIET
+; 0Eh:	Get/Set Volume Descriptor Preference
+;  In:	BX = subfunction
+;	     00h get preference
+;		 DX = 0000h
+;		 Return: DX = preference settings
+;	     01h set preference
+;		 DH = volume descriptor preference
+;		      01h = primary volume descriptor
+;		      02h = supplementary volume descriptor
+;		 DL = supplementary volume descriptor preference
+;		      01h = shift-Kanji
+;	CX = drive number (0=A:)
+; Out:	CF set on error
+;	   AX = error code (15=invalid drive,1=invalid function)
+;	CF clear if successful
+;
+;  In:	BL = 02h
+;	     BH =  0: ISO
+;		  -1: Joliet
+;	Subfunctions 0 & 1 are not supported; this is only used by DOSLFN.
+CD_VolDesc
+	jif	al ,ne, 2, Err01.
+	retif	[BP_(Joliet)] ,e, ah
+	mov	[BP_(Joliet)], ah
+	clc
+	for0	si, Drive+DrvEnt.Type, *,[NoDrives], DrvEnt_size
+	 movb	[si], UNKNOWN
+	next
+	return
+
+Err01.: jmp	Err01
+%define err1 Err01.
+%else
+%define err1 Err01
+%endif
+
+
+; 0Fh:	Get Directory Entry
+;  In:	CL = drive number (0=A:)
+;	CH bit 0 = copy flag
+;		     clear if direct copy
+;		     set if copy removes ISO/High Sierra diffs
+;	ES:BX -> ASCIZ path name
+;	SI:DI -> buffer for directory entry
+;		   must be 255 bytes for direct copy, 285 bytes for canonical
+; Out:	CF set on error
+;	   AX = error code
+;	CF clear if successful
+;	   AX = disk format (0=High Sierra,1=ISO 9660)
+;
+;  In:	CL = 0FFh
+;	  CH = function:
+;	       0 get tilde usage in AX (0 = off, -1 = on)
+;	       1 set tilde usage from BX (0 turn tildes off, anything else on)
+;	       2 get read-only attribute in AX (0 = off, 1 = on)
+;	       3 set read-only attribute from BX (0 off, anything else on)
+;	CL = 0FEh
+;	  ES:SI -> pointer to directory entry
+;	  ES:DI -> 11-byte buffer for FCB name
+;	     DX := alias number (0 for none)
+CD_DirEntry
+	cmp	cl, 0feh
+	jb	dir_ent
+	ja	do_api
+
+	save	es,di
+	 call	CDtoFCB
+	restore
+	clc
+mov11b
+	mov	cx, 11
+	rep	movsb
+	ret
+
+dir_ent:
+	shr	ch, 1			; Canonical entry not supported
+.e1:	jc	err1
+	call	SetForUs
+	cmpb	[es:bx], PATHSEPARATOR
+.e2:	jne	Err02			; must be absolute path
+	sub	bx, RootSlashOff	; path adjustment
+	call	PathLookup
+	call	FindEntry
+	jnz	.e2			; file not found (NC if found)
+	les	di, [BP_(_DI)]		; SI:DI
+	movzx.	cx, [si]
+	rep	movsb
+%ifdef HS
+	mov	bx, [BP_(DriveOfs)]
+	mov	al, [bx+DrvEnt.Type]
+	sub	al, HIGHSIERRA		; HS -> 0, ISO -> 1, NC
+	cbw
+%else
+	mov	ax, 1
+%endif
+	retAX
+
+do_api:
+	cmp	ch, 4
+%ifdef JOLIET
+	jnc	err1
+%else
+	cmc
+	jc	dir_ent.e1
+%endif
+	zero	ax
+	shr	ch, 1
+	if a				; 2 = get read-only attribute
+	 mov	al, [CDRO]
+	 sub	al, 0f8h		; clears carry
+	 retAX
+	fi
+	if nz				; 3 = set read-only attribute
+	 cmp	ax, [BP_(_BX)]
+	 adc	al, 0f8h		; clears carry
+	 mov	[CDRO], al
+	 ret
+	fi
+	if c				; 1 = set tilde usage
+	 if. {[BP_(_BX)] ,ne, ax}, dec ax ; if (BX != 0) AX = -1 (clears carry)
+	 mov	[Tildes], ax
+	 ret
+	fi
+	or	ax, [Tildes]		; 0 = get tilde usage (clears carry)
+	retAX
+
+
+; 10h:	Device request
+;  In:	   CX  = CD-ROM drive letter (0 = A, 1 = B, etc)
+;	ES:BX -> CD-ROM device driver request header
+; Out:	CF clear if device driver has been called
+;	   ES:BX request header updated
+;	CF set if device driver has not been called
+;	   AX = error code (000Fh = invalid drive, 0001h = invalid function)
+;	   ES:BX request header unchanged
+CD_Request
+	push	ax
+	 call	SetDDD
+	 jnz	Err0F
+	pop	bx
+	call	DDCall
+	ifb [es:bx+rh.Command] ,e, rhcmdIOCTL_In
+	 les	bx, [es:bx+rhIOCTL.CBPtr]	; on some drives we
+	 mov	ax, [es:bx]			; will miss media change
+	andif al ,e, 09h			; if direct access checks
+	 dec	ah ; cmp ah, 1			; so, if media has changed
+	andif ne				; set type to unknown to
+	 mov	bx, [BP_(DriveOfs)]		; force re-read on next
+	 movb	[bx+DrvEnt.Type], UNKNOWN	; non-direct access
+	fi
+	clc				; A-Ok from our perspective
+	ret
+
+
+;+
+; FUNCTION : CDtoFCB
+;
+;	Convert a CD filename to an FCB-style name.
+;
+; Parameters:
+;	ES:SI -> directory entry
+;	   DX := alias number
+;
+; Returns:
+;	SI -> dir_name := FCB name
+;
+; Destroys:
+;	AX,BX,CX,DX,DI
+;-
+CDtoFCB
+	lea	di, [es:si+Nameoff]
+	movzx.	cx, [es:si+FIDLenoff]
+	mov	bx, dir_name
+	push	bx
+
+%ifdef JOLIET
+	 ifflg	[BP_(Joliet)]
+	 andifb [es:di] ,b, 30h 	; Simple test for Joliet (but
+	  shr	cl, 1			;  may fail in rare instances)
+	  if nc 			; Not Joliet if odd
+	   pop	si			; Have DOSLFN convert from Joliet
+	   mov	bx, dx			;  (Unicode) to FCB (OEM)
+	   and	bx, [Tildes]
+	   mov	dl, 0CDh
+	   dos	71a8h
+	   ret
+	  fi
+	  rcl	cl, 1			; restore length of shortcut/OEM name
+	 fi
+%endif
+
+	 call	ToFCB
+	pop	si
+Glob.ret:
+	ret
+
+
+;+
+; FUNCTION : Glob
+;
+;	Match a CD entry's attribute and filename against a template.
+;
+; Parameters:
+;	see Match
+;
+; Returns:
+;	see Match
+;	CL := attribute (if matched)
+;
+; Destroys:
+;
+;-
+Glob
+	; Ignore entries < our start entry #
+	cmp	dx, strict i(entry)
+.entry iw
+	retif	b
+	save	ax
+	 mov	al, [si+isoDir.Flags]
+.flag ib
+	 call	ToDosAttr
+	 mov	cl, al
+	 and	al, i(attr)
+.attr ib
+	 cmp	cl, al
+	restore
+	retif	ne
+
+
+;+
+; FUNCTION : Match
+;
+;	Match a CD filename against a template.
+;
+; Parameters:
+;	SI -> directory
+;	file_name := template
+;	DX := alias number
+;
+; Returns:
+;	ZR if matched
+;	dir_name := FCB name
+;
+; Destroys:
+;	None.
+;-
+Match	uses	all
+	call	CDtoFCB
+	repeat	11
+	 dec	si			; dir_name - 1 == file_name + 10
+	 mov	al, [si]
+	 ;mov	al, [si-1]		; alternative to provide
+	 ;dec	si			;  alignment at cdxsda/Drive
+	next al ,e, {'?',[si+11]}
+	return
+
+
+;+
+; FUNCTION : ToDosDateTime
+;
+;	Convert the CD date & time format to the DOS format.
+;
+; Parameters:
+;	SI -> Directory entry
+;
+; Returns:
+;	EAX := DOS date & time
+;
+; Destroys:
+;	CX
+;-
+ToDosDateTime
+	mov	al, [si+Dateoff+Date_Time.Yr]
+	sub	al, 80			; ISO is from 1900, DOS is from 1980
+	cmov c, al, 0
+%ifdef i8086
+	mov	cl, 4
+	shl	ax, cl
+	or	al, [si+Dateoff+Date_Time.Mth]
+	inc	cx
+	shl	ax, cl
+	or	al, [si+Dateoff+Date_Time.Day]
+	xchg	dx, ax
+	mov	al, [si+Dateoff+Date_Time.Hr]
+	inc	cx
+	shl	ax, cl
+	or	al, [si+Dateoff+Date_Time.Min]
+	dec	cx
+	shl	ax, cl
+	mov	cl, [si+Dateoff+Date_Time.Sec]
+	shr	cl, 1
+	or	al, cl
+%else
+	shl	ax, 4
+	or	al, [si+Dateoff+Date_Time.Mth]
+	shl	ax, 5
+	or	al, [si+Dateoff+Date_Time.Day]
+	shl	eax, 16
+	mov	al, [si+Dateoff+Date_Time.Hr]
+	shl	ax, 6
+	mov	cx, [si+Dateoff+Date_Time.Min]
+	or	al, cl
+	shl	ax, 5
+	shr	ch, 1
+	or	al, ch
+%endif
+	ret
+
+
+;+
+; FUNCTION : ToDosAttr
+;
+;	Convert CD flags into DOS attribute.
+;
+; Parameters:
+;	AL := flags
+;
+; Returns:
+;	AL := atttribute
+;
+; Destroys:
+;	AH
+;-
+ToDosAttr
+	mov	ah, al
+	and	ax, hl(DIR, HIDDEN)	;  CD hidden = 1, dir =  2
+%ifdef i8086				; DOS hidden = 2, dir = 16
+	times 2 shl ah, 1
+%else
+	shl	ah, 2
+%endif
+	if z				; directories should not be read-only
+CDRO	 stc				; read-only (/R modifies to CLC)
+	fi
+	adc	ax, ax
+	or	al, ah
+	ret
+
+
+;+
+; FUNCTION : PathLookup
+;
+;	Locate the directory containing a filename.
+;
+; Parameters:
+;	ES:BX -> name (complete path)
+;
+; Returns:
+;	SI -> directory (DirEnt)
+;	file_name filled with FCB name
+;	Does not return if not found (error 3)
+;
+; Destroys:
+;	All
+;-
+PathLookup
+	; find last path separator
+	lea	si, [bx+RootSlashOff]
+	mov	di, si
+	mov	cx, si
+	when
+	 cmov {al ,e, PATHSEPARATOR}, di, si
+	 inc	si
+	while
+	 mov	al, [es:si]
+	is al nzr
+
+	if di ,e, cx
+	 call	RootEnt
+	 scasb				; check for trailing separator
+	 fi ne				; yes, point past it
+	 dec	di			; no, back to the NUL
+	else
+	 stosb				; Isolate directory path
+	 call	LookupDir		; Look for the directory
+	 movb	[es:di-1], PATHSEPARATOR  ; Restore full pathname
+	 jz	Err03			; Gotta be a dir, not a file
+	fi
+	zero	cx			; NUL-terminated
+	zero	dx			; No tilde
+	mov	bx, file_name
+	;jmp	ToFCB
+
+
+;+
+; FUNCTION : ToFCB
+;
+;	Converts a filename to DOS form (blank-padded 8+3). If the alias
+;	number is not zero it will be added to the end of the name (the
+;	8 part) after a tilde, if necessary.
+;	Eg: DX := 1, ES:DI -> "readme.html" ==> BX -> "README~1HTM".
+;
+; Parameters:
+;	ES:DI -> name
+;	   CX := length of name (0 if NUL-terminated)
+;	   BX -> buffer for FCB name
+;	   DX := alias number
+;
+; Returns:
+;	Nothing.
+;
+; Destroys:
+;	AX,BX,CX,DX,DI
+;-
+ToFCB
+	mov	ax, '  '                ; Blank-pad the name
+	save	bx,cx
+	for	bx,,*,{,11},+
+	 mov	[bx], al
+	next
+	restore
+
+	mov	al, [es:di]		; Names of 0h and 1h are the
+	jif	al ,be, 1, .dir 	;  current and parent directories
+
+	movb	[.tl+1], ch		; test extension (empty jump)
+
+	if al ,e, '.'                   ; Ignore a leading dot (no name
+	 inc	di			;  portion) - this may cause
+	 dec	cx			;  non-unique names
+	fi
+	mov	ah, 8			; Copy up to eight characters
+	call	FCBCopy 		;  for the name
+	retif	cxz
+	jc	.ext
+
+	repeat				; Skip remaining name characters
+	 call	term
+	 jc	.ext
+	 break z
+	 movb	[.tl+1], 7		; name is long, skip extension test
+	next
+	inc	cx
+
+.ext:	add	bx, 8			; Point to the extension
+	dec	cx			; Anything after the dot?
+	jz	.tl
+	mov	ah, 3			; Copy up to three characters
+	call	FCBCopy 		;  for the extension
+
+.tl:	jmp	$+2+7			; The name isn't long,
+	 retif	cxz			;  check extension
+	 call	term
+	 retif	z
+	xchg	ax, dx
+	zero	cx			; Count of digits (CH = 0 for Match)
+	and	ax, strict i(Tildes)
+Tildes iw
+	retif	z
+	repeat
+	 zero	dx
+	 dec	bx
+	 divw	[ten]
+	 inc	cx
+	 push	dx			; Save digits on the stack
+	until ax zr
+	do				; Determine position of tilde
+	 dec	bx			;  depending on length of filename
+	whileb [bx-1] ,e, ' '
+	movb	[bx], '~'
+	repeat
+	 pop	ax
+	 inc	bx
+	 add	al, '0'
+	 mov	[bx], al
+	next
+	ret
+
+.dir:	mov	al, '.'                 ; "." for current directory
+	cmov e, ah, al			;  and ".." for parent
+	mov	[bx], ax
+	return
+
+
+;+
+; FUNCTION : FCBCopy
+;
+;	Copy characters from the filename to the FCB name. The FCB name
+;	is uppercased. Copying stops at dot ('.'), semicolon (';') or NUL.
+;
+; Parameters:
+;	ES:DI -> filename
+;	   CX := length of filename
+;	   BX -> buffer for FCB name
+;	   AH := maximum number of characters to copy
+;
+; Returns:
+;	DI and CX updated
+;	CY if found dot
+;
+; Destroys:
+;	AX
+;-
+FCBCopy uses	bx
+	rptlmt	ah
+	 call	term
+	 retif	z
+	 if. {al, [], 'a','z'}, cbit al, 5
+	 mov	[bx], al
+	 inc	bx
+	next
+	clc
+	return
+
+
+;+
+; FUNCTION : term
+;
+;	Test for a terminating filename character.
+;
+; Parameters:
+;	ES:DI -> character
+;
+; Returns:
+;	AL := character
+;	DI -> next character
+;	CX := 0 if character is ';' or NUL
+;	ZR if character is a terminator (one of ".;\0")
+;	CY if character is '.'
+;
+; Destroys:
+;	None.
+;-
+term
+	mov	al, [es:di]
+	inc	di
+	cmp	al, '.'
+	stc
+	retif	e
+	if. {al ,e, ';',0}, zero cx
+	return
+
+
+;+
+; FUNCTION : LookupDir
+;
+;	Look up a name and ensure it is a directory.
+;
+; Parameters:
+;	ES:BX -> path
+;
+; Returns:
+;	NZ if found
+;	   SI -> directory
+;	ZR if not found or not directory
+;
+; Destroys:
+;
+;-
+LookupDir
+	call	Lookup
+	ifnz si, \
+	 testb	[si+DirEnt.Fattr], A_SUBDIR
+	ret
+
+
+;+
+; FUNCTION : Lookup
+;
+;	Find a name.
+;
+; Parameters:
+;	ES:BX -> path
+;
+; Returns:
+;	NC name found
+;	   SI -> directory entry
+;	   file_name := name in FCB style
+;	CY name not found
+;	   SI := 0
+;	   AX := error
+;
+; Destroys:
+;	AX,BX,CX,DX
+;-
+Lookup	uses	di
+
+	; Start at root
+	call	RootEnt
+
+	; Skip drive letters form \\D.\U.
+	lea	di, [bx+RootSlashOff]
+	do
+	 break	[es:di] zb		; clears carry
+	 mov	bx, di
+	 inc	di
+	 repeat
+	  inc	bx
+	  mov	al, [es:bx]
+	 until al ,e, {PATHSEPARATOR,0}
+	 mov	cx, bx
+	 sub	cx, di			; clears carry
+	 jz	.trail
+	 push	bx
+	  zero	dx
+	  mov	bx, file_name
+	  call	ToFCB
+	  call	DirLook
+	 pop	di
+	while nc
+	return
+
+.trail: mov	[es:di-1], cl		; remove trailing separator
+	ret.
+
+
+;+
+; FUNCTION : DirLook
+;
+;	Find a name in a directory.
+;
+; Parameters:
+;	SI -> directory
+;	file_name := name
+;
+; Returns:
+;	NC found
+;	   SI -> directory entry
+;	CY not found
+;	   SI := 0
+;	   AX := error
+;
+; Destroys:
+;	AX,BX,CX
+;-
+DirLook uses	es,di
+
+	; Make sure it really is a directory
+	jifb	[si+DirEnt.Fattr] ,&!, A_SUBDIR, .err3
+
+	ld	es, ds
+
+	; Check cache
+	mov	bx, [BP_(DriveOfs)]
+	lea	bx, [bx+DrvEnt.RootEnt]
+	call	getblk
+	for	di, [bx+DirEnt.Forw], {,ne,bx}
+%ifdef i8086
+	 if {[di+DirEnt.ParentBlk] ,e, ax} AND {[di+DirEnt.ParentBlk+2] ,e, dx}
+%else
+	 if [di+DirEnt.ParentBlk] ,e, eax
+%endif
+	  save	si,di
+	   mov	si, file_name
+	   ;lea di, [di+DirEnt.FName]	; FName is 0
+	   mov	cx, 11
+	   repe cmpsb
+	  restore
+	  je	.fnd
+	 fi
+	 mov	di, [di+DirEnt.Forw]
+	next
+
+%ifdef i8086
+	save	dx,ax,bx
+%else
+	save	eax,bx
+%endif
+	 call	FindEntry
+	restore
+	jnz	.err2
+	; Take from tail of cache queue
+	mov	di, [bx+DirEnt.Back]
+	mmovd	di+DirEnt.ParentBlk
+%ifdef HS
+	movzx.	bx, [bx+DrvEnt.Type-DrvEnt.RootEnt]
+	mov	al, [si+bx]
+%else
+	mov	al, [si+isoDir.Flags]
+%endif
+	call	ToDosAttr
+	call	DirFieldCopy
+%ifdef i8086
+	ldd	si+Blkoff
+	add	al, [si+ExAttroff]
+	adc	ah, ch			; CH zero from DirFieldCopy
+	adc	dx, 0			; but CX is not (ToDosDateTime uses CL)
+%else
+	movzx	eax, byte [si+ExAttroff]
+	add	eax, [si+Blkoff]
+%endif
+	call	setblk
+
+.fnd:	call	ToFront
+	mov	si, di
+	;clc				; cleared by ToFront
+	return
+
+.err3:	zero	si
+	mov	al, PATHNOTFOUND
+	jmp2
+.err2:	mov	al, FILENOTFOUND
+	stc
+	cbw
+	ret.
+
+
+;+
+; FUNCTION : FindEntry
+;
+;	Locate a filename's directory entry.
+;
+; Parameters:
+;	SI -> directory to search
+;	file_name := name to locate (may contain question marks)
+;
+; Returns:
+;	ZR if found
+;	   SI -> directory offset
+;	   dir_name := name found
+;	NZ if not found
+;	   SI corrupted
+;
+; Destroys:
+;	AX,BX,CX,DX,DI
+;-
+FindEntry
+	call	DirSize
+	mov	di, cx
+%ifdef i8086
+	zerow	[BP_(scratch)]
+%else
+	zero	dx
+%endif
+	movw	[Matchfunc], Match - Matchfunc-2
+
+
+;+
+; FUNCTION : FindName
+;
+;	Find a name in a directory.
+;
+; Parameters:
+;	EAX := directory sector
+;	 DI := number of sectors
+;	 DX := entry number (scratch for i8086)
+;	 BX -> drive entry
+;	file_name := name to locate (may contain question marks)
+;
+; Returns:
+;	ZR if found
+;	   SI -> directory offset
+;	   dir_name := name found
+;	NZ if not found
+;	   SI corrupted
+;	EAX, DI & DX updated
+;	BX -> sector buffer
+;
+; Destroys:
+;
+;-
+FindName
+	uses	es
+	ld	es, ds
+	mov	bx, [bx+DrvEnt.Bufp]
+	repeatr di, ns
+	 call	CdReadBlk
+	 break nz
+%ifdef i8086
+	 save	dx
+	 mov	dx, [BP_(scratch)]
+%endif
+	 for	si, bx, {[si] ,ne, ch}, cx	; {[si] nzb}
+	  call	Match
+Matchfunc iw
+%ifdef i8086
+	  if z
+	   mov	[BP_(scratch)], dx
+	   pop	dx
+	   ret.
+	  fi
+%else
+	  retif z
+%endif
+	  mov	cl, [si]
+	  inc	dx
+	 next
+	 and	dl, 0c0h
+	 add	dx, 64
+%ifdef i8086
+	 mov	[BP_(scratch)], dx
+	 restore
+	 add	ax, 1
+	 adc	dx, 0
+%else
+	 inc	eax
+%endif
+	next
+	return
+
+
+;+
+; FUNCTION : DirSize
+;
+;	Round the directory size to a number of sectors.
+;
+; Parameters:
+;	SI -> directory entry
+;
+; Returns:
+;	 BX -> drive entry
+;	 CX := sectors in directory, minus one
+;	EAX := first directory sector
+;
+; Destroys:
+;	None.
+;-
+DirSize
+	mov	bx, [BP_(DriveOfs)]
+	ldd	si+DirEnt.FSize
+%ifdef i8086
+	sub	ax, 1
+	sbb	dx, 0
+	call	rshift
+%else
+	dec	eax
+	shr	eax, SECTORSHIFT
+%endif
+	xchg	cx, ax
+getblk
+	ldd	si+DirEnt.BlkNo
+	ret
+
+
+;+
+; FUNCTION : ToFront
+;
+;	Move a cache entry to the front of the queue.
+;
+; Parameters:
+;	DI -> entry
+;
+; Returns:
+;	Nothing.
+;
+; Destroys:
+;	AX,BX,SI
+;-
+ToFront
+	; Unlink
+	mov	bx, [di+DirEnt.Back]
+	mov	si, [di+DirEnt.Forw]
+	mov	[si+DirEnt.Back], bx	; cur->forw->back = cur->back
+	mov	[bx+DirEnt.Forw], si	; cur->back->forw = cur->forw
+
+	; Link in after RootEnt
+	call	RootEnt
+	mov	bx, [si+DirEnt.Forw]
+	mov	[si+DirEnt.Forw], di	; root->forw = cur
+	mov	[di+DirEnt.Forw], bx	; cur->forw = root->forw
+	mov	ax, [bx+DirEnt.Back]
+	mov	[bx+DirEnt.Back], di	; root->forw->back = cur
+	mov	[di+DirEnt.Back], ax	; cur->back = root->forw->back
+	ret
+
+RootEnt:
+	mov	si, [BP_(DriveOfs)]
+	add	si, DrvEnt.RootEnt	; clears carry
+	ret
+
+
+;+
+; FUNCTION : DDCall
+;
+;	Call the drive's device driver.
+;
+; Parameters:
+;	ES:BX -> request header
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+DDCall	uses	ax,si
+	mov	si, [BP_(DriveOfs)]
+	mmovb	[es:bx+rh.SubUnit], [si+DrvEnt.Unit]
+	call	far [si+DrvEnt.Strategyp]
+	call	far [si+DrvEnt.Interruptp]
+	return
+
+
+;+
+; FUNCTION : CdReadBlk
+;
+;	Read a sector from the CD into the drive's buffer.
+;
+; Parameters:
+;	EAX := sector number
+;
+; Returns:
+;	ZR sector successfully read
+;	NZ failed
+;	   EAX destroyed
+;
+; Destroys:
+;	CX (1)
+;-
+CdReadPVD
+%ifdef i8086
+	mov	ax, 10h
+	cwd
+%else
+	zero	eax
+	mov	al, 10h
+%endif
+
+CdReadBlk
+	uses	es,bx,di
+	mov	di, [BP_(DriveOfs)]
+%ifdef i8086
+	if {ax ,ne, [di+DrvEnt.BufBlkNo]} OR {dx ,ne, [di+DrvEnt.BufBlkNo+2]}
+%else
+	if eax ,ne, [di+DrvEnt.BufBlkNo]
+%endif
+	 ld	es, ds
+	 mov	bx, [di+DrvEnt.Bufp]
+	 call	CdReadLong1
+%ifdef i8086
+	 if. nz, mov dx, -1
+%else
+	 if. nz, or eax, -1
+%endif
+	 mmovd	di+DrvEnt.BufBlkNo
+	fi
+	return
+
+
+;+
+; FUNCTION : CdReadLong
+;
+;	Read a number of sectors from the CD into a buffer.
+;
+; Parameters:
+;	ES:BX -> buffer
+;	  EAX := starting sector number
+;	   CX := number of sectors
+;
+; Returns:
+;	ZR if successful
+;	NZ if failed
+;
+; Destroys:
+;
+;-
+CdReadLong1
+	mov	cx, 1
+CdReadLong
+	uses	es,bx,di
+	mov	di, bx
+	mov	bx, rh_rl
+	ses	di, bx+rhReadLong.Bufp
+	mmovd	bx+rhReadLong.StartBlk
+	mov	[bx+rhReadLong.Count], cx
+	ld	es, ds
+	call	DDCall
+	cmpw	[bx+rh.Status], 100h
+	return
+
+
+align 2
+
+cdxsda	equ	$
+
+; drive table, cache and buffers are set up dynamically here at run time
+Drive	equ	$ + cdxsda_len * 2
+
+
+;============================================================================
+;  everything below this line is discarded after installing the redirector
+;
+;  The help screen is overwritten with the drive entries.
+
+HelpMsg
+dln
+dln "Provides access to CD-ROM drives."
+dln
+dln "SHSUCDX [/D:[?|*]DriverName[,[Drive][,[Unit][,[MaxDrives]]]] [/L:Drive]]"
+dln "        [/D:Drives] [/C] [/V] [/~[+|-]] [/R[+|-]] [/U] [/Q[+|Q]]"
+dln "        [/L:Number] [/E][/K][/S][/M]"
+dln
+dln "   DriverName  Name of the CD-ROM device driver."
+dln "                  '?' will silently ignore an invalid name."
+dln "                  '*' will ignore and, at install, reserve a drive."
+dln "   Drive       First drive letter to assign to drives attached to this driver."
+dln "   Unit        First drive unit on this driver to be assigned a drive letter."
+dln "   MaxDrives   Maximum number of units on this driver to assign drive letters."
+dln
+dln "   /D:Drives   Install: Reserve space for additional drives."
+dln "               Resident: Remove drives last assigned."
+dln "   /C          Don't relocate to high (or low) memory."
+dln "   /V          Install: Display memory usage."
+dln "               Resident/with help: Display information."
+dln "   /~          Toggle or turn on/off tilde generation (default is off)."
+dln "   /R          Toggle or turn on/off read-only attribute (default is on)."
+dln "   /U          Unload."
+dln "   /Q          Quiet - don't display sign-on banner."
+dln "   /Q+         Extra quiet - only display assigned/removed drives."
+dln "   /QQ         Really quiet - don't display anything."
+dln "   /L:Number   Return assigned drive number:"
+dln "                  0 = number of drives (255 = not installed)"
+dln "                  1 = first drive (1 = A:, 255 = not assigned)"
+dln "                  2 = second drive, etc."
+dlz "   /E/K/S/M    Ignored (for MSCDEX commandline compatibility)."
+
+%define ln 13,10
+
+COptionMsg	db  ln,"Compile-time options: "
+%ifdef i8086
+		db  "8086, "
+%else
+		db  "386, "
+%endif
+		db  "CD root form"
+%ifndef CDROOT
+		db  " not used"
+%endif
+		db  ", High Sierra "
+%ifndef HS
+		db  "not "
+%endif
+		db  "supported,"
+		db  ln,"                      "
+		db  "Joliet "
+%ifndef JOLIET
+		db  "not "
+%endif
+		db  "supported, "
+		db  "image on CD "
+%ifndef CDIMAGE
+		db  "not "
+%endif
+		db  "supported."
+CRLF		dlz
+
+ROptionMsg	db  ln,"Run-time options: tilde generation is o??"
+TildeState	equ $-2
+		dlz ln,"                  read-only attribute is o??"
+ROState 	equ $-5
+
+DrivesInstalled 	dln
+			dlz "SHSUCDX installed."
+DrivesAssigned		dlz "  Drives Assigned"
+DrivesRemoved		dlz "  Drives Removed"
+DriveHeader		dlz "Drive  Driver   Unit"
+DriveLine		dlz "  ?:   ????????  ??"
+DrivesAvail		dlz "0 drive(s) available."
+
+MemoryUsage		dln
+			dz  "Memory Usage"
+MemoryHigh		dlz		" (loaded high)"
+MemoryBytes		db  "  Static:  "
+MemoryStatic		dln	       "00000 bytes"
+			db  "  Dynamic: "
+MemoryDynamic		dln	       "00000 bytes"
+			db  "  Total:   "
+MemoryTotal		dlz	       "00000 bytes"
+
+UnInstalledMsg		dlz ln,"SHSUCDX uninstalled and memory freed."
+CantUnInstallMsg	dlz ln,"SHSUCDX can't uninstall."
+
+WrongCPUMsg		dlz ln,"Must have at least a 386."
+WrongDOSMsg		dlz ln,"Must be DOS 3.3 or later."
+DifVersionMsg		dlz ln,"Different version of SHSUCDX is installed."
+AlreadyInstalledMsg	dlz ln,"SHSUCDX or MSCDEX is already installed."
+
+CantFindCdMsg		dz  ln,"Can't open CD driver "
+NoDrivesAvailMsg	dz  ln,"Need more drive letters."
+HighUnitMsg		dz  ln,"Units specified don't exist."
+NoDrivesMsg		dz  ln,"No drives assigned."
+NotEnoughMemMsg 	dz  ln,"Not enough memory."
+FullStop		equ $-2
+CantInstallMsg		dlz "  SHSUCDX can't install."
+
+UnknownOpt		db  "Unknown option: '"
+OptChar 		dlz		     "?'."
+DDriver 		dlz "/D: driver name required."
+DInvalid		dlz "/D: invalid drive letter."
+DUnitNumber		dlz "/D: expecting unit number (0-99)."
+DMaxNumber		dlz "/D: expecting maximum units (1-9)."
+LMissingValue		dlz "/L: expecting value."
+LNoD			dlz "/L: must follow /D."
+LInvalid		dlz "/L: invalid drive letter."
+LBadNumber		dlz "/L: only two digits allowed."
+
+%macro dopt 2.nolist
+	dw	%2
+	db	%1
+%endmacro
+
+Options dopt	'?', Opt?
+	dopt	'C', OptC
+	dopt	'D', DoDriver
+	dopt	'E', OptIgn             ; MSCDEX: expanded memory
+	dopt	'K', OptIgn             ; MSCDEX: Kanji
+	dopt	'L', DoLetter
+	dopt	'M', OptIgn             ; MSCDEX: buffers
+	dopt	'Q', OptQ
+	dopt	'R', OptR
+	dopt	'S', OptIgn             ; MSCDEX: sharing
+	dopt	'U', OptU
+	dopt	'V', OptV
+	dopt	'~', Opt~
+	dopt	255, OptUnk
+
+
+struc DrvrEnt
+  .Name 	resb	8+1
+  .Drive	resb	1
+  .Unit 	resb	1
+  .NoWanted	resb	1
+  .Ignore	resb	1
+endstruc
+
+section .bss align=1			; startup will clear to zero
+Drivers 	resb	DrvrEnt_size * MAXDRIVES
+NoDrivers	resb	1
+DriveIndex	resw	1
+ResSeg		resw	1
+IsInstalled	resb	1
+GoTSR		resb	1
+CDSBase 	resd	1
+CDSLen		resw	1		; for this DOS version
+LastDOSDrive	resb	1
+IoctlInBuf	resb	5		; get devhdr addr
+UnInstallIt	resb	1
+HelpMe		resb	1
+LoadLow 	resb	1
+QuietFlag	resb	1
+XQuietFlag	resb	1
+VerboseFlag	resb	1
+BSS_size	equ	$-$$
+
+section .text
+
+
+;+
+; FUNCTION : MsgOut
+;
+;	Output a NUL-terminated string.
+;
+; Parameters:
+;	SI -> message
+;
+; Returns:
+;	Nothing.
+;
+; Destroys:
+;	AX,DL,SI
+;-
+MsgOut
+	retif	[SilentFlag]
+	mov	ah, 02h 		; display ch function
+	when
+	 prch.	al
+	while
+	 lodsb
+	is al nzr
+	return
+
+%macro Output 0-1.nolist
+  %if %0 == 1
+	mov	si, %1
+  %endif
+	call	MsgOut
+%endmacro
+
+
+;+
+; FUNCTION : DisplayOpts
+;
+;	Display compile- and run-time options.
+;
+; Parameters:
+;	[IsInstalled] := set if installed
+;	[ResSeg] := segment of TSR, if installed
+;
+; Returns:
+;	SI -> message to display
+;
+; Destroys:
+;
+;-
+DisplayOpts
+	mov	si, COptionMsg
+	retif	!,[IsInstalled]
+	Output
+	mov	es, [ResSeg]
+	cmov	ax, {[es:Tildes] zw}, 'ff', 'n '
+	mov	[TildeState], ax
+	cmov	ax, {byte [es:CDRO] ,e, 0f8h}, 'ff', 'n '
+	mov	[ROState], ax
+	;mov	si, ROptionMsg		; set by Output (follows COptionMsg)
+	return
+
+
+WrongCPU:
+	mov	si, WrongCPUMsg
+	mov	al, RC_CPU
+	jmp	ExitMsg
+
+WrongDOS:
+	mov	si, WrongDOSMsg
+	mov	al, RC_DOS
+	jmp	ExitMsg
+
+WrongMem:
+	mov	si, NotEnoughMemMsg
+	mov	al, RC_MEM
+	jmp	ExitMsg
+
+DifVersion:
+	mov	si, DifVersionMsg
+	jmp	already
+
+AlreadyInstalled:
+	mov	si, AlreadyInstalledMsg
+already:
+	mov	al, RC_INSTALLED
+	jmp	ExitMsg
+
+DisplayHelp:
+	Output	CopyrightMsg
+	mov	si, HelpMsg
+	ifflg	[VerboseFlag], \
+	 call	DisplayOpts
+	mov	al, RC_OK
+	;jmp	ExitMsg
+
+ExitMsg:
+	save	ax
+exmsg:	 Output
+	restore
+ExitAL:
+	exit
+
+
+Begin:
+	cld
+
+%ifndef i8086
+	cpu	8086
+	; check processor. Based on code by Henrik Haftmann.
+	push	sp			; Check for 80286
+	pop	ax
+	jif	ax ,ne, sp, WrongCPU
+	pushf				; Now check for 386
+	pop	ax
+	or	ax, 7000h
+	push	ax
+	popf
+	pushf
+	pop	ax
+	jif	ax ,&!, 7000h, WrongCPU
+	cpu	386
+%endif
+
+	; zero out the BSS (initialise variables)
+	jif	sp ,be, section..bss.start + BSS_size, WrongMem
+	mov	di, section..bss.start
+	mov	cx, BSS_size
+	zero	al
+	rep	stosb
+
+	mov	[ResSeg], cs
+
+	; is a redirector installed?
+	mov	si, .ok
+	mov	ax, MSCDEX_Q
+	mov	bx, SMARTDRV_Q
+	push	ax
+	 mpx	REDIR, InstallChk
+	pop	dx
+	if bx ,ne, SMARTDRV_Q
+	 ; v3 or later is installed
+	 if bx ,ne, COMPILE_FLAG
+	  mov	si, DifVersion
+	 else
+	  sflg. [IsInstalled]
+	  mov	[ResSeg], es
+	 fi
+	 ld	es, ds
+	elif {al ,e, 0ffh} AND {dx ,e, MSCDEX_R}
+	 ; another redirector is already installed
+	 mov	si, AlreadyInstalled
+	fi
+
+	; get command line parameters
+	save	si
+	 call	ParseCommandLine
+	restore
+
+	jflg	[HelpMe], DisplayHelp
+
+	; different/other version installed, didn't want help, so complain
+	jmp	si
+.ok:
+	; if not installed and /L is used without any drivers, quietly exit
+	mov	al, 255
+	jif	{!,[IsInstalled]} AND {[RC],ne,al} AND {[NoDrivers] zb}, ExitAL
+
+	; get list of lists address thereby getting DOS seg
+	dos	52h			; ES:BX is LOLp
+	mov	[FN1p+2], es		; set seg of DOS ptrs
+	mov	[SDBp+2], es
+	mov	[DTApp+2], es
+	mmovd	CDSBase, es:bx+LoL.CDS
+
+	; find last available drive letter
+	mov	al, [es:bx+LoL.LastDrive]
+	dec	ax			; LoL use 1 for 'A'
+	mov	[LastDOSDrive], al
+
+	; set version specific DOS parameters
+	dos	30h
+	if al ,be, 3
+	 jif	b OR {ah ,b, 30}, WrongDOS
+	 mov	al, 51h 		; version 3.3+ values
+	 mov	si, 2ceh+0ch
+	 mov	bx, 2ceh+92h
+	 mov	cx, 2ceh+192h
+	 mov	dx, 2ceh+23ah
+	else
+	 mov	al, 58h 		; values for version 4+
+	 mov	si, 320h+0ch
+	 mov	bx, 320h+9eh
+	 mov	cx, 320h+19eh
+	 mov	dx, 320h+24dh
+	fi
+	mov	[CDSLen], al
+	mov	[DTApp],  si
+	mov	[FN1p],   bx
+	mov	[SDBp],   cx
+	mov	[SAttrp], dx
+
+	jflg	[UnInstallIt], UnInstall
+
+	ifflg	[IsInstalled]
+	 mov	es, [ResSeg]
+	 movzx. cx, [ResDrives]
+	 call	RemoveDrives
+	 zerob	[ResDrives]
+	 if [NoDrivers] zb
+	  jflg	[LoadLow], AlreadyInstalled
+	  mov	al, RC_OK
+	  call	GetRC
+	  jmp	ExitAL
+	 fi
+	 mov	al, [es:ResDrives]
+	 jzr	al, AlreadyInstalled
+	 mov	[ResMax], al
+	 sflg.	[QuietFlag]
+	fi
+
+	; take advantage of the photo op
+	ifnflg	[QuietFlag], \
+	 Output CopyrightMsg
+
+	; assign drives
+	mov	di, Drive
+	for0	si, Drivers, *,{b,[NoDrivers]}, DrvrEnt_size
+	 ; Open device driver and use IOCTL Input sub-command 0 to get
+	 ; the device header address.
+	 mov	dx, si			; DrvrEnt.Name
+	 dos	3Dh, 0			; read only
+	 if c				; error when carry set
+.notcd:   cmpb	[si+DrvrEnt.Ignore], '*'
+	  jb	CantFindCd		; 0
+	  cntnu ne OR [IsInstalled]	; '?'
+	  incb	[ResDrives]
+	  cntnu
+	 fi
+	 xchg	bx, ax			; move handle to bx
+	 mov	cx, 5			; dta has cmd code plus a fptr
+	 mov	dx, IoctlInBuf		;   to device header
+	 dos	4402h			; IOCTL input-get devhdr addr
+	 pushf
+	  dos	3eh			; close file handle in bx
+	 popf
+	 jc	.notcd			; error when carry set
+	 les	bx, [IoctlInBuf+1]
+	 call	AssignDrives
+	next
+	mmovb	[NoDrives], [DriveIndex]
+	add	al, [ResDrives]
+	jz	NoDrivesAssigned	; no drives were assigned or reserved
+
+	ifnflg	[IsInstalled]
+	 movzx. cx, al
+	 mov	al, DrvEnt_size 	; find Drive Table space needed
+	 mul	cl
+	 add	ax, Drive
+%ifdef DOSMOVES
+	 call	InitDOSseg
+%endif
+	 mov	[DirCachep], ax 	; relocate dir cache
+	 mov	ax, CACHESIZE		; find cache space needed
+	 mul	cx
+	 add	ax, [DirCachep]
+	 mov	[IODatap], ax		; relocate IOData buffers
+	 mov	ax, SECTORSIZE + 1	; find buffer space needed (add one for
+	 mul	cx			;  a directory scan sentinel)
+	 add	ax, [IODatap]		; last byte to keep now in ax
+	 jc	NotEnoughMem
+	 call	AllocMem
+	 ifnflg [XQuietFlag], \
+	  Output DrivesInstalled
+	fi
+
+	; Display drive assignments
+	mmovb	[FirstDriveNo], [Drive+DrvEnt.No]
+	mov	cx, [NoDrives]
+	ifflg	[IsInstalled]
+	 mov	es, [ResSeg]
+	 mov	al, [es:ResDrives]
+	 sub	al, cl
+	 mov	[ResDrives], al
+	fi
+	ld	es, ds
+	mov	bx, Drive
+	mov	si, DrivesAssigned
+	call	DisplayDrives
+
+	call	SetRoot
+
+	ifflg	[IsInstalled]
+	 call	CopyDrives
+	 mov	al, [FirstDriveNo]
+	 inc	ax
+	 call	GetRC
+	 jmp	ExitAL
+	fi
+
+	ifflg	[VerboseFlag], \
+	 call	DisplayMemory
+
+	; is DOSLFN running?
+	mov	dx, DOSLFN_Q
+	dos	7146h
+	if ax ,e, DOSLFN_R		; it's installed, check if it's active
+	 mov	es, dx
+	 mov	al, [es:103h]		; ctrl0
+	 tbits	al, 7,3 		; active & CDROM support
+	 if. e, sflg. [Joliet]		; we have LFN, so use Joliet
+	fi
+
+	jmp	Install
+
+
+UnInstall:
+	jnflg	[IsInstalled], CantUnInstall
+	dos	352fh			; check if the vector is still ours
+	mov	ax, es
+	jif	{ax ,ne, [ResSeg]} OR {bx ,ne, New2F}, CantUnInstall
+	mov	cx, [es:NoDrives]
+	if cxnz
+	 mov	di, Drive
+	 call	ClrRoot
+	fi
+	save	ds
+	 lds	dx, [es:Old2F]		; restore vector
+	 dos	252Fh
+	restore
+	mov	ax, es			; determine the MCB
+	add	ax, (Res_Begin - 40h) >> 4
+	mov	es, ax			; point back to the PSP
+	ifw [es:0] ,ne, 20cdh		; check for the PSP signature
+	 add	ax, 4			; no PSP, so it was relocated
+	 mov	es, ax
+	fi
+	dos	49h			; free memory
+	mov	si, UnInstalledMsg
+	mov	al, RC_OK
+	jmp	ExitMsg
+
+CantUnInstall:
+	mov	si, CantUnInstallMsg
+	mov	al, RC_UNINST
+	jmp	ExitMsg
+
+
+NoDrivesAssigned:
+	mov	si, NoDrivesMsg
+	mov	al, RC_DRIVE
+	jmp	InitExitMsg
+
+CantFindCd:
+	save	si
+	 Output CantFindCdMsg
+	restore
+	Output				; DrvrEnt.Name
+	mov	si, FullStop
+	mov	al, RC_CD
+	jmp	InitExitMsg
+
+HighUnit:
+	mov	si, HighUnitMsg
+	mov	al, RC_UNIT
+	jmp	InitExitMsg
+
+NoDrivesAvail:
+	mov	si, NoDrivesAvailMsg
+	mov	al, RC_LETTER
+	jmp	InitExitMsg
+
+NotEnoughMem:
+	mov	si, NotEnoughMemMsg
+	mov	al, RC_MEM
+	;jmp	InitExitMsg
+
+InitExitMsg:
+	push	ax
+	 Output
+	 cmov	si, [IsInstalled], CRLF, CantInstallMsg
+	jmp	exmsg
+
+
+;+
+; FUNCTION : AssignDrives
+;
+;	Find a drive letter for each unit on a device.
+;
+; Parameters:
+;	ES:BX -> device driver header
+;	   SI -> driver entry
+;	   DI -> drive entry
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+AssignDrives
+	mov	[DevHeader], bx
+	mov	[DevSegment], es
+	mmovw	[DevStrategy], [es:bx+6]
+	mmovw	[DevInterrupt], [es:bx+8]
+	mov	dh, [si+DrvrEnt.Unit]	; first unit wanted
+	mov	al, [es:bx+21]		; number of units on driver
+	sub	al, dh
+	jbe	HighUnit
+	movzx.	cx, [si+DrvrEnt.NoWanted]  ; units asked for
+	if cxz OR {cl ,a, al}		   ; don't exceed available units
+	 mov	cl, al
+	fi
+	mov	dl, [si+DrvrEnt.Drive]
+	cmov {dl ,b, [DriveNo]}, dl, [DriveNo]
+	for	di,,*,, DrvEnt_size
+	 cmpb	[DriveIndex], MAXDRIVES
+ResMax ib
+	 break ae
+	 call	FindAvailDrive
+	 jnz	NoDrivesAvail
+	 call	SetDrive
+	 inc	dx			; next drive number
+	 inc	dh			; next device unit
+	 incb	[DriveIndex]
+	next
+	mov	[DriveNo], dl
+	ret
+
+
+;+
+; FUNCTION : FindAvailDrive
+;
+;	Find first available drive letter.
+;
+; Parameters:
+;	DL := start letter (0 = A)
+;
+; Returns:
+;	NZ if no drive available
+;	DL := drive letter found
+;
+; Destroys:
+;
+;-
+FindAvailDrive
+	mov	al, [CDSLen]
+	mul	dl
+	les	bx, [CDSBase]
+	add	bx, ax
+	for0	bx,,{dl ,be, [LastDOSDrive]}, [CDSLen]
+	 breakb [es:bx+CDS.Flags+1] ,&!, 0C0h ; drive in use ?
+	 inc	dx
+	next
+	ret
+
+
+;+
+; FUNCTION : SetDrive
+;
+;	Set the initial drive information.
+;
+; Parameters:
+;	DI -> drive entry
+;	DL := drive number (0 = A)
+;	DH := device unit
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+SetDrive
+	mov	[di+DrvEnt.No], dx	; .Unit also set
+	movb	[di+DrvEnt.Type], UNKNOWN
+	mov	ax, i(DevSegment)
+DevSegment iw
+	mov	[di+DrvEnt.DevHdrp+2], ax
+	movw	[di+DrvEnt.DevHdrp], i(DevHeader)
+DevHeader iw
+	mov	[di+DrvEnt.Strategyp+2], ax
+	movw	[di+DrvEnt.Strategyp], i(DevStrategy)
+DevStrategy iw
+	mov	[di+DrvEnt.Interruptp+2], ax
+	movw	[di+DrvEnt.Interruptp], i(DevInterrupt)
+DevInterrupt iw
+	ret
+
+
+%ifdef DOSMOVES
+; DR-DOS moves the DOS segment between CONFIG and AUTOEXEC, so SHSUCDX will
+; not work if it's INSTALLed. Fortunately, Int31 points to it (v7.01.07).
+; This code gets relocated between the drives and the dir cache, if required.
+; Update: the latest version has INSTALLLAST, so this is no longer needed.
+SetDOSseg
+	save	ds,ax
+%ifdef i8086
+	zero	ax
+	mov	ds, ax
+%else
+	ld	ds, 0h
+%endif
+	mov	ax, [31h*4+2]
+	mov	[FN1p+2], ax
+	mov	[SDBp+2], ax
+	mov	[DTApp+2], ax
+	restore
+	cmp	ah, MSCDEX
+	ret
+SetDOSseg_size equ $-SetDOSseg
+
+
+;+
+; FUNCTION : InitDOSseg
+;
+;	Test for DR-DOS and relocate the DOS segment code.
+;
+; Parameters:
+;	AX := address of relocation
+;
+; Returns:
+;	AX := updated address for directory cache
+;
+; Destroys:
+;
+;-
+InitDOSseg
+	; see if we're using DR-DOS by testing the segment of Int31
+	uses	cx
+	zero	cx
+	mov	es, cx
+	mov	cx, [es:31h*4+2]
+	retif	cx ,ne, [FN1p+2]
+	ld	es, ds
+	mov	si, SetDOSseg
+	mov	di, ax
+	mov	cx, SetDOSseg_size
+	rep	movsb
+	sub	ax, drdos+3
+	movb	[drdos], 0E8h		; CALL
+	mov	[drdos+1], ax
+	xchg	ax, di
+	return
+%endif
+
+
+;+
+; FUNCTION : AllocMem
+;
+;	Allocate memory or use the PSP.
+;
+; Parameters:
+;	AX := last byte to keep
+;
+; Returns:
+;	[KeepSize] := paragraphs to keep
+;	[ResSeg] := segment to install to
+;	[GoTSR] := on if relocating into PSP
+;
+; Destroys:
+;
+;-
+AllocMem
+	add	ax, 0Fh - Res_Begin	; roundup, program size
+	mov	cl, 4
+	shr	ax, cl			; program paragraphs to keep
+	mov	[KeepSize], ax
+	ifnflg	[LoadLow]
+	 ; try allocating memory
+	 dos	5802h			; get current UMB state
+	 push	ax			; save it
+	 dos	5800h			; get current allocation strategy
+	 push	ax			; save it
+	  mov	bx, 1			; link in UMB
+	  dos	5803h
+	  cmpw	[ResSeg], 0A000h	; already high?
+	  cmov	bl, b, 80h, 0		; high or low memory, first fit
+	  dos	5801h
+	  mov	bx, [KeepSize]
+	  dos	48h
+	  pushf
+	  if nc
+	   save ax
+	    sub ax, Res_Begin >> 4	; adjust segment for our offset
+	    mov [ResSeg], ax
+	   restore
+	   dec	ax			; MCB of TSR
+	   mov	es, ax
+	   inc	ax
+	   mov	[es:1], ax		; make it own itself
+	   save ds
+	    mov cx, cs
+	    dec cx			; MCB of installer
+	    mov ds, cx
+	    mov si, 8			; copy the MCB name
+	    mov di, si
+	    mov cx, si
+	    rep movsb
+	   restore
+	  fi
+	  pop	dx
+	 pop	bx			; restore allocation strategy
+	 dos	5801h
+	 pop	bx			; restore UMB state
+	 dos	5803h
+	 shr	dl, 1
+	 retif	nc
+	 mov	ax, [KeepSize]		; no memory, do the PSP relocate
+	fi
+	; save some bytes by relocating into the PSP
+	add	ax, 4			; need to keep first 40h bytes
+	mov	cx, cs
+	dec	cx			; MCB
+	mov	es, cx			; find out how much memory we have
+	jif	[es:3] ,b, ax, NotEnoughMem
+	mov	[KeepSize], ax
+	subw	[ResSeg], (Res_Begin - 40h) >> 4
+	sflg.	[GoTSR]
+	return
+
+
+;+
+; FUNCTION : SetRoot
+;
+;	Set the Current Directory Structure with the new drives.
+;
+; Parameters:
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+SetRoot
+	for0	di, Drive, *,[NoDrives], DrvEnt_size
+	 mov	ax, [di+DrvEnt.No]	; AH = .Unit
+	 les	bx, [di+DrvEnt.DevHdrp]
+	 inc	ax
+	 mov	[es:bx+20], al		; set drive number in device header
+	 dec	ax
+	 save	ax
+	  mulb	[CDSLen]
+	  les	bx, [CDSBase]
+	  add	bx, ax
+	 restore
+	 movw	[es:bx+CDS.Flags], 0C080h	; physical network & redir bits
+	 orw	[es:bx+CDS.Redir], -1
+	 orw	[es:bx+CDS.Redir+2], -1
+	 movw	[es:bx+CDS.RootOff], RootSlashOff	; root \ in curr_path
+	 add	al, 'A'
+%ifdef CDROOT
+	 ; Set to CD root form \\D.\U.
+	 movw	[es:bx+CDS.CurrPath], '\\'
+	 mov	[es:bx+CDS.CurrPath+2], al
+	 movw	[es:bx+CDS.CurrPath+3], '.\'
+	 add	ah, 'A'
+	 mov	[es:bx+CDS.CurrPath+5], ah
+	 movw	[es:bx+CDS.CurrPath+6], '.'
+%else
+	 mov	[es:bx+CDS.CurrPath], al
+	 movw	[es:bx+CDS.CurrPath+1], ':'
+%endif
+	next
+	ret
+
+
+;+
+; FUNCTION : CopyDrives
+;
+;	Copy drives from transient portion to resident portion.
+;
+; Parameters:
+;	[ResSeg]   := resident segment
+;	[NoDrives] := number of drives
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+CopyDrives
+	mov	es, [ResSeg]
+	mov	al, DrvEnt_size
+	mulb	[es:NoDrives]
+	mov	si, Drive
+	mov	di, si
+	add	di, ax
+	repeatb [NoDrives]
+	 mov	cx, DrvEnt.Bufp
+	 rep	movsb
+	 add	si, DrvEnt_size - DrvEnt.Bufp
+	 add	di, DrvEnt_size - DrvEnt.Bufp
+	 incb	[es:NoDrives]
+	 decb	[es:ResDrives]
+	next
+	ret
+
+
+;+
+; FUNCTION : RemoveDrives
+;
+;	Remove drives from the end of the list.
+;
+; Parameters:
+;	CX := number of drives to remove
+;	ES -> resident segment
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+RemoveDrives
+	mov	al, [es:NoDrives]
+	cmov {cl ,a, al}, cl, al	; can't remove more than assigned
+	retif	cxz
+	sub	[es:NoDrives], cl
+	add	[es:ResDrives], cl
+	sub	al, cl
+	mov	dl, DrvEnt_size
+	mul	dl
+	mov	di, Drive
+	add	di, ax			; ES:DI -> first drive to remove
+	save	cx
+	 call	ClrRoot
+	restore
+	mov	si, DrivesRemoved
+	mov	bx, di
+	call	DisplayDrives
+	return
+
+
+;+
+; FUNCTION : ClrRoot
+;
+;	Remove drives from the Current Directory Structure.
+;
+; Parameters:
+;	ES:DI -> first drive
+;	   CX := number of drives (not zero)
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+ClrRoot uses	ds
+	lea	si, [di+DrvEnt.No]
+	for	si,,*,, DrvEnt_size
+         mov    al, [es:si]
+	 mulb	[cs:CDSLen]
+	 lds	bx, [cs:CDSBase]
+	 add	bx, ax
+	 cntnuw [bx+CDS.Flags] ,ne, 0C080h ; physical net redir drive ?
+	 zerow	[bx+CDS.Flags]		; clear drive flags
+	 zerow	[bx+CDS.Redir]
+	 zerow	[bx+CDS.Redir+2]
+%ifdef CDROOT
+	 mov	ax, 'A:'
+	 add	al, [es:si]
+	 mov	[bx+CDS.CurrPath], ax
+	 movw	[bx+CDS.CurrPath+2], '\'
+%else
+	 zerob	[bx+CDS.CurrPath+3]
+%endif
+	next
+	return
+
+
+;+
+; FUNCTION : DisplayDrives
+;
+;	Display the drive letter associated with each driver and unit (if any)
+;	and the number of available drives.
+;
+; Parameters:
+;	   SI -> message header
+;	   CX := number of drives
+;	ES:BX -> Drive table
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+DisplayDrives
+	retif	[SilentFlag]
+	if cxnz
+	 ifnflg [XQuietFlag]
+	  Output
+	  Output DriveHeader
+	  mov	si, DriveLine
+	 elif	[IsInstalled]
+	  cmp	si, DrivesAssigned
+	  mov	si, DriveLine+1
+	  cmovby [si], e, '+', '-'
+	 else
+	  mov	si, DriveLine+2
+	 fi
+	 for	bx,,*,, DrvEnt_size
+	  mov	al, [es:bx+DrvEnt.No]
+	  add	al, 'A'
+	  mov	[DriveLine+2], al
+	  save	ds,es,si
+	   lds	si, [es:bx+DrvEnt.DevHdrp]
+	   add	si, 10			; driver name in header
+	   ld	es, cs
+	   mov	di, DriveLine+7
+	   times 4 movsw
+	  restore
+	  mov	ah, ' ' - '0'           ; convert drive unit to ASCII
+	  mov	al, [es:bx+DrvEnt.Unit]
+	  if. {al ,ae, 10}, aam
+	  add	ax, '00'
+	  xchg	al, ah
+	  mov	[DriveLine+17], ax
+	  save	si
+	   Output
+	  restore
+	 next
+	elif	!,[XQuietFlag]
+	 Output NoDrivesMsg+2
+	 Output CRLF
+	fi
+	ifnflg	[XQuietFlag]
+	 mov	al, [es:ResDrives]
+	andif al nzr
+	 mov	si, DrivesAvail
+	 add	[si], al
+	 Output
+	fi
+	return
+
+
+;+
+; FUNCTION : DisplayMemory
+;
+;	Display the memory usage.
+;
+; Parameters:
+;	[KeepSize] := total paragraphs
+;	[GoTSR]    := set if not relocated
+;	[ResSeg]   := segment of TSR
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+DisplayMemory
+	Output	MemoryUsage
+	cmpw	[ResSeg], 0A000h
+	cmov	si, ae, MemoryHigh, CRLF
+	Output
+	mov	ax, [KeepSize]
+	mov	cl, 4
+	shl	ax, cl
+	mov	si, MemoryTotal+4
+	mov	bx, ax
+	call	itoa
+	mov	ax, Drive - Res_Begin
+	ifflg	[GoTSR], \
+	 add	ax, 40h
+	mov	si, MemoryStatic+4
+	sub	bx, ax
+	call	itoa
+	xchg	ax, bx
+	mov	si, MemoryDynamic+4
+	call	itoa
+	Output	MemoryBytes
+	ret
+
+
+;+
+; FUNCTION : itoa
+;
+;	Convert a binary number to a space-padded string.
+;
+; Parameters:
+;	AX := number
+;	SI -> zero-filled buffer, at units
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+itoa
+	mov	cx, 6			; one more, to avoid for0
+	repeat
+	 zero	dx
+	 divw	[ten]
+	 add	[si], dl
+	 dec	si
+	 dec	cx
+	until ax zr
+	for	si,,*,,-		; fill remainder with spaces
+	 movb	[si], ' '
+	next
+	ret
+
+
+;+
+; FUNCTION : ToUpper
+;
+;	Uppercase a letter.
+;
+; Parameters:
+;	AL := character
+;
+; Returns:
+;	AL := uppercase letter or unchanged
+;
+; Destroys:
+;	None.
+;-
+ToUpper
+	if. {al ,[], 'a','z'}, cbit al, 5
+	ret
+
+
+;+
+; FUNCTION : ParseCommandLine
+;
+;	Determine the command line arguments.
+;
+; Parameters:
+;	None.
+;
+; Returns:
+;	Option flags set.
+;
+; Destroys:
+;
+;-
+ParseCommandLine
+	mov	di, 81h
+	movzx.	bx, [di-1]		; command line length psp +80h
+	mov	[di+bx], bh		; NUL terminate
+	while
+	 call	GetParm
+	is nc
+	 save	di
+	  for	di, Options, ne
+	   scasw			; skip over address
+	   scasb
+	   jb	OptUnk
+	  next
+	  call	[di-3]
+	  jc	badopt
+	 restore
+	wend
+	if {[NoDrivers] zb} AND [IsInstalled] AND [VerboseFlag]
+	 sflg.	[HelpMe]
+	fi
+OptIgn: ret
+
+OptUnk: mov	si, UnknownOpt
+badopt: mov	al, RC_OPT
+	jmp	ExitMsg
+
+
+;+
+; FUNCTION : GetParm
+;
+;	Retrieve the next command line option and its value, if any.
+;	Options may be preceded by '/' or '-'; its value may be
+;	preceded with ':'.
+;
+; Parameters:
+;	DI -> command line (NUL terminated)
+;
+; Returns:
+;	NC if argument found
+;	   AL := argument (uppercase)
+;	   SI -> argument's value
+;	   CX := length of value
+;	   DI -> next argument
+;	CY if no more options
+;
+; Destroys:
+;
+;-
+GetParm
+	do
+	 mov	al, [di]
+	 inc	di
+	 jif	al zr, .done
+	while al ,be, ' '
+
+	if al ,e, {'/','-'}
+	 mov	al, [di]
+	 inc	di
+	 jif	al zr, .done
+	fi
+	call	ToUpper
+	mov	[OptChar], al
+
+	ifb. {[di] ,e, ':'}, inc di
+	mov	si, di
+	zero	cx
+	while
+	 mov	ah, [di]
+	 retif	ah ,e, {ch,' ','/'}
+	 inc	di
+	 inc	cx
+	wend
+
+.done:	stc
+	return
+
+
+;+
+; FUNCTION : ProcessParm
+;
+;	Process a command line argument.
+;
+; Parameters:
+;	AL := argument (uppercase)
+;	SI -> argument's value
+;	CX := length of value
+;	NC
+;
+; Returns:
+;	CY if invalid argument
+;	   SI -> error message
+;
+; Destroys:
+;
+;-
+Opt?:	sflg.	[HelpMe]		; /? display help and exit
+	ret
+
+OptU:	sflg.	[UnInstallIt]		; /U uninstall driver
+	ret
+
+OptC:	sflg.	[LoadLow]		; /C load in conventional memory
+	ret
+
+OptV:	sflg.	[VerboseFlag]		; /V verbose (memory usage/option help)
+	ret
+
+OptQ:	sflg.	[QuietFlag]		; /Q[+|Q] quiet
+	if cxnz
+	 lodsb
+	 if al ,e, '+'
+	  sflg. [XQuietFlag]
+	 else
+	  cbit al, 5
+	  if. {al ,e, 'Q'}, sflg. [SilentFlag]
+	 fi
+	fi
+	clc
+	ret
+
+Opt~:	mov	bx, Tildes		; /~[+|-] toggle/set/unset tilde usage
+	call	plusminus
+	if e
+	 sbb	ax, ax			; CY => -1, NC => 0
+	 mov	[bx], ax
+	fi
+	xorw	[bx], -1		; clears carry (NOT doesn't)
+OptR.ret:
+	ld	ds, cs
+	ret
+
+OptR:	mov	bx, CDRO		; /R[+|-] toggle/set/unset read-only
+	call	plusminus
+	if e
+	 mov	al, 0f8h / 2
+	 rcl	al, 1			; CY => F9 (STC), NC => F8 (CLC)
+	 mov	[bx], al
+	fi
+	ibit	[bx], 0 		; clears carry
+	ret.
+
+plusminus:
+	inc	ax			; clear zero
+	if cxnz
+	 lodsb
+	 retif	al ,e, '+'
+	 if. {al ,e, '-'}, stc
+	fi
+.ret:	mov	ds, [ResSeg]
+	ret
+
+
+;+
+; FUNCTION : DoDriver
+;
+;	Process the /D option.
+;
+; Parameters:
+;	SI -> values
+;	CX := length of values
+;
+; Returns:
+;	CY if error
+;	   SI -> error message
+;
+; Destroys:
+;
+;-
+DoDriver
+	ifb {[si] ,[], '1','9'} AND {cx ,e, 1}  ; reserved drive count
+	 lodsb
+	 sub	al, '0'                 ; clears carry
+	 mov	[ResDrives], al
+	 ret
+	fi
+
+	mov	bx, [DriverIndex]
+	addw	[DriverIndex], DrvrEnt_size
+	incb	[NoDrivers]
+	mov	di, si
+	call	DriverOpt		; driver
+	ifz dx
+.err:	 mov	si, DDriver
+	 stc
+	 ret
+	fi
+	mov	al, [si]
+	if al ,e, {'?','*'}
+	 mov	[bx+DrvrEnt.Ignore], al
+	 inc	si
+	 dec	dx
+	 jz	.err
+	fi
+	save	cx,di
+	 lea	di, [bx+DrvrEnt.Name]
+	 rptlmt dx,,8			; eight characters max.
+	  lodsb
+	  call	ToUpper
+	  stosb
+	 next
+	restore
+	call	DriverOpt		; drive letter
+	ifnz dx
+	 ifn dx ,ne, 1
+	  lodsb
+	  cbit	al, 5
+	  sub	al, 'A'
+	 if al ,ae, 32
+	  mov	si, DInvalid
+	  stc
+	  ret
+	 fi
+	 mov	[bx+DrvrEnt.Drive], al
+	fi
+	call	DriverOpt		; first device unit
+	ifnz dx
+	 if dx ,a, 2
+.err99:   mov	si, DUnitNumber
+	  stc
+	  ret
+	 fi
+	 call	atoi
+	 jc	.err99
+	 mov	[bx+DrvrEnt.Unit], al
+	fi
+	call	DriverOpt		; maximum drives
+	ifnz dx
+	 if dx ,ae, 2
+.err9:	  mov	si, DMaxNumber
+	  stc
+	  ret
+	 fi
+	 call	atoi
+	 jc	.err9
+	 mov	[bx+DrvrEnt.NoWanted], al
+	fi
+	;clc
+	ret
+
+
+;+
+; FUNCTION : DriverOpt
+;
+;	Retrieve a driver option.
+;
+; Parameters:
+;	DI -> start of option
+;	CX := length of all remaining options
+;
+; Returns:
+;	SI -> start of option
+;	DX := option length
+;	DI -> start of next option
+;	CX := remaining length
+;
+; Destroys:
+;
+;-
+DriverOpt
+	zero	dx
+	retif	cxz
+	for	si, di, {cx nzr}
+	 lodsb
+	 dec	cx
+	 break al ,e, ','
+	 inc	dx
+	next
+	xchg	si, di
+	return
+
+
+;+
+; FUNCTION : DoLetter
+;
+;	Process the /L option.
+;
+; Parameters:
+;	SI -> values
+;	CX := length of values
+;
+; Returns:
+;	CY if error
+;	   SI -> error message
+;
+; Destroys:
+;
+;-
+DoLetter
+	jif	cxz, .noval		; /L requires a value
+	cmp	cx, 2			; set flags for atoi
+	save	si
+	 call	atoi
+	restore
+	if nc
+	 mov	[RC], al
+	 mov	si, LBadNumber
+	 cmp	cx, 3
+	 cmc
+	 ret
+	fi
+	mov	di, [DriverIndex]
+	if di ,e, Drivers
+	 mov	si, LNoD		; Haven't seen /D
+	 stc
+	 ret
+	fi
+	lodsb
+	cbit	al, 5
+	sub	al, 'A'
+	if al ,b, 32
+	 sub	di, DrvrEnt_size - DrvrEnt.Drive
+	 stosb
+	 ;clc
+	 ret
+	fi
+	mov	si, LInvalid		; Not a valid drive
+	stc
+	ret
+.noval: mov	si, LMissingValue
+	stc
+	ret
+
+
+;+
+; FUNCTION : atoi
+;
+;	Convert one or two characters to a number.
+;
+; Parameters:
+;	SI -> characters
+;	ZR for two digits
+;	NZ for one digit
+;
+; Returns:
+;	NC if succeeded
+;	   AL := number
+;	CY if failed
+;
+; Destroys:
+;
+;-
+atoi
+	mov	ah, 0
+	if z
+	 lodsb
+	 sub	al, '0'
+	 retif	al ,ae, 10
+	 mov	ah, al
+	fi
+	lodsb
+	sub	al, '0'
+	retif	al ,ae, 10
+	aad
+	stc
+.ret:	cmc
+	ret
+
+
+; Insert filler so nothing gets trashed when the dir caches are initialised.
+%if $-Drive < MAXDRIVES*(DrvEnt_size+CACHESIZE)
+  times MAXDRIVES*(DrvEnt_size+CACHESIZE) - ($-Drive) nop
+%endif
+
+
+Install:
+	; initialize drive table and link up dir cache
+	mov	cx, [NoDrives]
+	add	cl, [ResDrives]
+	for	bx, Drive, *,, DrvEnt_size
+	 call	InitDrive
+	 addw	[DirCachep], CACHESIZE
+	 addw	[IODatap], SECTORSIZE + 1
+	next
+
+	mov	al, [FirstDriveNo]	; return with first drive number
+	inc	ax			; A=1
+	call	GetRC
+	mov	[RC], al
+
+	ifflg	[GoTSR]
+	 movb	[RC+1], 31h		; TSR exit
+	 zero	cx
+	 xchg	cx, [2Ch]		; zap evironment pointer in PSP
+	 if cxnz			; CX := environment ptr
+	  mov	es, cx			; no environment if zero
+	  dos	49h			; release environment
+	 fi
+	fi
+
+	; store original 2F vector
+	dos	352Fh
+	ses	bx, Old2F
+
+	; copy to the resident memory
+	mov	es, [ResSeg]
+	mov	di, CritInit		; no need to copy the stack
+	push	es
+	push	di
+	mov	[rh_io+rhIOCTL.CBPtr+2], es	; relocation item
+	mov	si, di
+	mov	cx, [Drive+DrvEnt.Bufp] ; don't copy the sector buffers
+	sub	cx, si
+	rep	movsb
+
+	; set new 2F vector
+	ld	ds, es
+	mov	dx, New2F
+	dos	252Fh
+
+	retf				; jump to critical init and exit
+
+
+;+
+; FUNCTION : InitDrive
+;
+;	Set drive's cache and buffer pointers, link up the cache.
+;
+; Parameters:
+;	BX -> drive
+;	[DirCachep] -> pointer to directory cache
+;	[IODatap] -> pointer to sector buffer
+;
+; Returns:
+;
+; Destroys:
+;
+;-
+InitDrive
+	uses	cx
+	mmovw	[bx+DrvEnt.Bufp], [IODatap]
+	; link up cache for dir entries
+	mov	di, i(DirCachep)
+DirCachep iw
+	mov	[bx+DrvEnt.RootEnt+DirEnt.Forw], di
+	lea	si, [di+DirEnt_size]
+	mov	[di+DirEnt.Forw], si	; first entry points forward to second
+	lea	ax, [bx+DrvEnt.RootEnt]
+	mov	[di+DirEnt.Back], ax	; and backwards to root
+	repeat	CACHEENTRIES - 1
+	 mov	[si+DirEnt.Back], di	; second entry points backward to first
+	 mov	di, si
+	 add	si, DirEnt_size
+	 mov	[di+DirEnt.Forw], si	; and forward to next
+	next
+	mov	[di+DirEnt.Forw], ax	      ; last entry points forw to root
+	mov	[bx+DrvEnt.RootEnt+DirEnt.Back], di ; root points back to last
+	return
+
+
+;+
+; FUNCTION : GetRC
+;
+;	Determine the exit code.
+;
+; Parameters:
+;	AL := default code
+;
+; Returns:
+;	AL := exit code as specified by /L
+;
+; Destroys:
+;
+;-
+GetRC
+	retifb	[RC] ,e, 255
+	mov	es, [ResSeg]
+	mov	al, [RC]
+	mov	ah, [es:NoDrives]
+	ifz al
+	 mov	al, ah
+	 ret
+	fi
+	if al ,a, ah
+	 mov	al, 255
+	 ret
+	fi
+	mov	ah, DrvEnt_size
+	dec	ax
+	mul	ah
+	xchg	bx, ax
+	mov	al, [es:bx+Drive+DrvEnt.No]
+	inc	ax
+	return
