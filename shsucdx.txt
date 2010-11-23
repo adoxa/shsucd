@@ -1,9 +1,9 @@
 
 				    SHSUCDX
 
-			   Copyright 2005 Jason Hood
+			   Copyright 2006 Jason Hood
 
-			    Freeware.  Version 3.02
+			    Freeware.  Version 3.04
 
 			Derived from v1.4b by John McCoy
 
@@ -36,6 +36,7 @@
 	/V	memory statistics or option information
 	/~	tilde usage
 	/R	read-only attribute usage
+	/I	install
 	/U	unload
 	/Q	quiet
 
@@ -63,6 +64,9 @@
     MAX is the maximum number of units on this driver to be assigned drives.
     The default is all units (or all remaining units, if UNIT is given).
 
+    Once installed, /D by itself will display the assigned drives and return
+    the number of drives assigned.
+
     /D - Drive manipulation
 
     At install time, /D can also be used to  reserve  space  for  additional
@@ -84,7 +88,13 @@
     /C - Memory usage
 
     By default, SHSUCDX will load itself into high memory, if available,  or
-    into low memory if it is already high.  This option will prevent that.
+    into  low  memory if it is already high.  This option will prevent that.
+    To be exact:
+
+	SHSUCDX 	relocate high
+	SHSUCDX /C	stay low
+	LH SHSUCDX	relocate low
+	LH SHSUCDX /C	stay high
 
     /V - Memory statistics
 
@@ -123,6 +133,11 @@
     By default, files on the CD are given the  read-only  attribute.  Should
     you  wish to remove this attribute, this option will do so.  As with /~,
     it can be used after installation and it accepts '+' and '-'.
+
+    /I - Install
+
+    Normally SHSUCDX will refuse to install if it detects another redirector
+    (such as MSCDEX).  This option will cause SHSUCDX to install anyway.
 
     /U - Unload
 
@@ -278,6 +293,15 @@
 
     Legend: + added, - bug-fixed, * changed.
 
+    v3.04 - 1 October, 2006:
+    - 8086 version trashed memory when the disc was missing
+    * align sector buffers on a DWORD boundary
+
+    v3.03 - 20 December, 2005:
+    - incorrectly restored UMB state
+    + /I will install even if a redirector is already present
+    + /D by itself will display drive assignments and return number assigned
+
     v3.02 - 5 May, 2005:
     + set drive number in device driver's header (needed by I_Cache)
     + Int2F/AX=1500 will return AL=FF (needed by XCD in DESQview/X)
@@ -302,5 +326,5 @@
     * clean slate.
 
 
-    ========================
-    Jason Hood, 5 May, 2005.
+    ============================
+    Jason Hood, 1 October, 2006.

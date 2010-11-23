@@ -7,6 +7,8 @@
 ;
 ; v3.01, March, 2005.
 ; v3.02, April/May, 2005.
+; v3.03, December, 2005.
+; v3.04, October, 2006.
 ;
 ;*** Begin original comments (abridged):
 ;***************************************************************************
@@ -134,7 +136,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 %define RC_OK		0		; help, tilde/ro, successful uninstall
 					; 1..32 first drive number (A=1)
 
-%assign COMPILE_FLAG hl(2,0)
+%assign COMPILE_FLAG hl(4,0)
 %ifdef i8086
   %assign COMPILE_FLAG COMPILE_FLAG | bit(0)
 %endif
@@ -166,7 +168,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.02 (5 May, 2005). Freeware.        | John H. McCoy, October 2000,"
+dln "Version 3.04 (1 October, 2006).  Freeware.   | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
 		db	26
 
@@ -542,7 +544,12 @@ NotForUs:
 	incb	[BP_(Active)]		; If aborted it won't be reset
 	save	es,bp,si,di		; NB: does not reset swap data,
 	 mov	[BP_(CEH_SP)], sp	;     abort will *really* abort
-	 lss.	sp, BP_(_SP)		; Need to use the DOS stack
+%ifdef i8086
+	 mov	ss, [BP_(_SP)+2]	; Need to use the DOS stack
+	 mov	sp, [_SP]
+%else
+	 lss	sp, [BP_(_SP)]
+%endif
 	 mov	ah, 00011110b		; Disk data error, allow retry & fail
 	 mov	al, [DriveNo]
 	 push	ax			; Int 24 error code on stack
@@ -714,7 +721,7 @@ GetTicks
 InitCD
 	; Flush the directory cache
 	lea	si, [bx+DrvEnt.RootEnt]
-	mov	cx, ISO9660
+	mov	cl, ISO9660		; CH zero from CdReadPVD in ForUs
 	for	di, [si+DirEnt.Forw], {,ne, si}
 	 mov	[di+DirEnt.FName], ch
 	 mov	di, [di+DirEnt.Forw]
@@ -2320,7 +2327,7 @@ FindName
 	ld	es, ds
 	mov	bx, [bx+DrvEnt.Bufp]
 	repeatr di, ns
-	 call	CdReadBlk
+	 call	CdReadBlk			; returns CH = 0
 	 break nz
 %ifdef i8086
 	 save	dx
@@ -2542,8 +2549,8 @@ dln
 dln "Provides access to CD-ROM drives."
 dln
 dln "SHSUCDX [/D:[?|*]DriverName[,[Drive][,[Unit][,[MaxDrives]]]] [/L:Drive]]"
-dln "        [/D:Drives] [/C] [/V] [/~[+|-]] [/R[+|-]] [/U] [/Q[+|Q]]"
-dln "        [/L:Number] [/E][/K][/S][/M]"
+dln "        [/D:Drives] [/C] [/V] [/~[+|-]] [/R[+|-]] [/I] [/U] [/Q[+|Q]]"
+dln "        [/L:Number] [/D] [/E][/K][/S][/M]"
 dln
 dln "   DriverName  Name of the CD-ROM device driver."
 dln "                  '?' will silently ignore an invalid name."
@@ -2559,6 +2566,7 @@ dln "   /V          Install: Display memory usage."
 dln "               Resident/with help: Display information."
 dln "   /~          Toggle or turn on/off tilde generation (default is off)."
 dln "   /R          Toggle or turn on/off read-only attribute (default is on)."
+dln "   /I          Install even if another redirector is detected."
 dln "   /U          Unload."
 dln "   /Q          Quiet - don't display sign-on banner."
 dln "   /Q+         Extra quiet - only display assigned/removed drives."
@@ -2567,6 +2575,7 @@ dln "   /L:Number   Return assigned drive number:"
 dln "                  0 = number of drives (255 = not installed)"
 dln "                  1 = first drive (1 = A:, 255 = not assigned)"
 dln "                  2 = second drive, etc."
+dln "   /D          Display assigned drives and return the number assigned."
 dlz "   /E/K/S/M    Ignored (for MSCDEX commandline compatibility)."
 
 %define ln 13,10
@@ -2658,6 +2667,7 @@ Options dopt	'?', Opt?
 	dopt	'C', OptC
 	dopt	'D', DoDriver
 	dopt	'E', OptIgn             ; MSCDEX: expanded memory
+	dopt	'I', OptI
 	dopt	'K', OptIgn             ; MSCDEX: Kanji
 	dopt	'L', DoLetter
 	dopt	'M', OptIgn             ; MSCDEX: buffers
@@ -2689,6 +2699,7 @@ CDSBase 	resd	1
 CDSLen		resw	1		; for this DOS version
 LastDOSDrive	resb	1
 IoctlInBuf	resb	5		; get devhdr addr
+InstallIt	resb	1
 UnInstallIt	resb	1
 HelpMe		resb	1
 LoadLow 	resb	1
@@ -2857,6 +2868,7 @@ Begin:
 	restore
 
 	jflg	[HelpMe], DisplayHelp
+	cmov [InstallIt], si, .ok
 
 	; different/other version installed, didn't want help, so complain
 	jmp	si
@@ -2963,6 +2975,8 @@ Begin:
 	 mov	ax, CACHESIZE		; find cache space needed
 	 mul	cx
 	 add	ax, [DirCachep]
+	 add	ax, 3			; align to DWORD
+	 and	ax, ~3
 	 mov	[IODatap], ax		; relocate IOData buffers
 	 mov	ax, SECTORSIZE + 1	; find buffer space needed (add one for
 	 mul	cx			;  a directory scan sentinel)
@@ -3000,6 +3014,7 @@ Begin:
 	ifflg	[VerboseFlag], \
 	 call	DisplayMemory
 
+%ifdef JOLIET
 	; is DOSLFN running?
 	mov	dx, DOSLFN_Q
 	dos	7146h
@@ -3009,6 +3024,7 @@ Begin:
 	 tbits	al, 7,3 		; active & CDROM support
 	 if. e, sflg. [Joliet]		; we have LFN, so use Joliet
 	fi
+%endif
 
 	jmp	Install
 
@@ -3266,6 +3282,7 @@ AllocMem
 	ifnflg	[LoadLow]
 	 ; try allocating memory
 	 dos	5802h			; get current UMB state
+	 cbw				; returns byte, but sets by word
 	 push	ax			; save it
 	 dos	5800h			; get current allocation strategy
 	 push	ax			; save it
@@ -3729,6 +3746,11 @@ GetParm
 Opt?:	sflg.	[HelpMe]		; /? display help and exit
 	ret
 
+OptI:	sflg.	[InstallIt]		; /I install anyway
+	cflg	[IsInstalled]
+	mov	[ResSeg], cs
+	ret
+
 OptU:	sflg.	[UnInstallIt]		; /U uninstall driver
 	ret
 
@@ -3813,6 +3835,15 @@ DoDriver
 	mov	di, si
 	call	DriverOpt		; driver
 	ifz dx
+	 if [IsInstalled]
+	  mov	es, [ResSeg]
+	  mov	bx, Drive
+	  mov	si, DrivesAssigned
+	  mov	cx, [es:NoDrives]
+	  call	DisplayDrives
+	  mov	al, [es:NoDrives]
+	  jmp	ExitAL
+	 fi
 .err:	 mov	si, DDriver
 	 stc
 	 ret

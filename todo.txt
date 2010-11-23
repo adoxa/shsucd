@@ -1,5 +1,6 @@
-/I option to override install check and install anyway? This would allow images
-to be loaded from within Windows (which has its own MSCDEX).
+Modify image programs to handle unrecognised formats.
+
+Handle http://webs.ono.com/usr016/de_xt/ filesystem? zisofs? Mt Rainier?
 
 Problem with XP setup on FreeDOS. Read problem? FreeDOS problem?
 
@@ -14,6 +15,7 @@ Critical sections?
 
 SHSUCDHD: real-time decompression (LZO)?
 (et al)   allow reads greater 62Ki?
+	  Make incomplete images an error, /W option to make a warning.
 
 Linux/dosemu locking?
 Writing to hard drive whilst reading from CD? (Redirecting CDBENCH output.)

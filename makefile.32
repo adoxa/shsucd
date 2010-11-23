@@ -1,0 +1,14 @@
+# Makefile for Win32 (MinGW) versions of omi and isobar.
+# Jason Hood, 10 June, 2005.
+
+CFLAGS = -Wall -O2 -mtune=pentium4
+LFLAGS = -s -ltcconio
+CC = gcc
+
+%32.exe: %.c
+	$(CC) $(CFLAGS) -o $@ $< $(LFLAGS)
+
+all: omi32.exe isobar32.exe
+
+omi32.exe: omi.c
+isobar32.exe: isobar.c
