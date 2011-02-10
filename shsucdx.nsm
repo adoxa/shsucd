@@ -1821,10 +1821,10 @@ Glob
 Match	uses	all
 	call	CDtoFCB
 	repeat	11
-	 dec	si			; dir_name - 1 == file_name + 10
-	 mov	al, [si]
-	 ;mov	al, [si-1]		; alternative to provide
-	 ;dec	si			;  alignment at cdxsda/Drive
+	 ;dec	si			; dir_name - 1 == file_name + 10
+	 ;mov	al, [si]
+	 mov	al, [si-1]		; alternative to provide
+	 dec	si			;  alignment at cdxsda/Drive
 	next al ,e, {'?',[si+11]}
 	return
 
@@ -2334,10 +2334,7 @@ FindName
 	 save	dx
 	 mov	dx, [BP_(scratch)]
 %endif
-	 mov	si, bx
-	 while
-	  mov	cl, [si]
-	 is cxnz
+	 for0	si, bx, {[si] ,ne, ch}, cx	; {[si] nzb}
 	  call	Match
 Matchfunc iw
 %ifdef i8086
@@ -2349,9 +2346,9 @@ Matchfunc iw
 %else
 	  retif z
 %endif
-	  add	si, cx
+	  mov	cl, [si]
 	  inc	dx
-	 wend
+	 next
 	 and	dl, 0c0h
 	 add	dx, 64
 %ifdef i8086
