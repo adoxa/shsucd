@@ -9,6 +9,7 @@
 ; v3.02, April/May, 2005.
 ; v3.03, December, 2005.
 ; v3.04, October, 2006.
+; v3.05, February, 2011.
 ;
 ;*** Begin original comments (abridged):
 ;***************************************************************************
@@ -136,7 +137,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 %define RC_OK		0		; help, tilde/ro, successful uninstall
 					; 1..32 first drive number (A=1)
 
-%assign COMPILE_FLAG hl(4,0)
+%assign COMPILE_FLAG hl(5,0)
 %ifdef i8086
   %assign COMPILE_FLAG COMPILE_FLAG | bit(0)
 %endif
@@ -168,7 +169,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.04 (1 October, 2006).  Freeware.   | John H. McCoy, October 2000,"
+dln "Version 3.05 (10 February, 2011).  Freeware. | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
 		db	26
 
@@ -2333,7 +2334,10 @@ FindName
 	 save	dx
 	 mov	dx, [BP_(scratch)]
 %endif
-	 for	si, bx, {[si] ,ne, ch}, cx	; {[si] nzb}
+	 mov	si, bx
+	 while
+	  mov	cl, [si]
+	 is cxnz
 	  call	Match
 Matchfunc iw
 %ifdef i8086
@@ -2345,9 +2349,9 @@ Matchfunc iw
 %else
 	  retif z
 %endif
-	  mov	cl, [si]
+	  add	si, cx
 	  inc	dx
-	 next
+	 wend
 	 and	dl, 0c0h
 	 add	dx, 64
 %ifdef i8086
