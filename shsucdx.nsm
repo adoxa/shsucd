@@ -169,7 +169,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.05 (10 February, 2011).  Freeware. | John H. McCoy, October 2000,"
+dln "Version 3.05 (11 February, 2011).  Freeware. | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
 		db	26
 
@@ -1197,10 +1197,10 @@ RD_FindFirst
 	mov	al, 8			; volume label attribute
 	if [es:si-1] ,ne, al		; SAttrp
 	 sub	di, SDB.ParentSize+2	; point back to beginning
-	 call	DoFindFirst
-	 mov	al, FILENOTFOUND	; DOS will apparently zero on success
-	 ret
-	fi
+	 jmp	DoFindFirst
+	 ;mov	al, FILENOTFOUND	; DOS will apparently zero on success
+	 ;ret				; seems it should return NOMOREFILES
+	fi				;  (makes DOS 6.22 TREE work)
 
 	; Handle vol id
 	lea	si, [bx+DrvEnt.RootEnt] ; VLabel
@@ -1821,10 +1821,10 @@ Glob
 Match	uses	all
 	call	CDtoFCB
 	repeat	11
-	 ;dec	si			; dir_name - 1 == file_name + 10
-	 ;mov	al, [si]
-	 mov	al, [si-1]		; alternative to provide
-	 dec	si			;  alignment at cdxsda/Drive
+	 ;dec	 si			; dir_name - 1 == file_name + 10
+	 ;mov	 al, [si]
+	 mov   al, [si-1]		; alternative to provide
+	 dec   si			;  alignment at cdxsda/Drive
 	next al ,e, {'?',[si+11]}
 	return
 
