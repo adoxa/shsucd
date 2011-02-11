@@ -1195,12 +1195,14 @@ RD_FindFirst
 	stosw				; SDB.ParentSize
 
 	mov	al, 8			; volume label attribute
-	if [es:si-1] ,ne, al		; SAttrp
-	 sub	di, SDB.ParentSize+2	; point back to beginning
-	 jmp	DoFindFirst
+	;if [es:si-1] ,ne, al		; SAttrp
+	 ;sub	di, SDB.ParentSize+2	; point back to beginning
+	 ;call	DoFindFirst
 	 ;mov	al, FILENOTFOUND	; DOS will apparently zero on success
 	 ;ret				; seems it should return NOMOREFILES
-	fi				;  (makes DOS 6.22 TREE work)
+	;fi				;  (makes DOS 6.22 TREE work)
+	sub	di, SDB.ParentSize+2	; point back to beginning
+	jif	[es:si-1], ne, al, DoFindFirst
 
 	; Handle vol id
 	lea	si, [bx+DrvEnt.RootEnt] ; VLabel
