@@ -173,6 +173,39 @@ dln "Version 3.05 (11 February, 2011).  Freeware. | John H. McCoy, October 2000,
 dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
 		db	26
 
+; Put the options here, to make room for the stack.
+%macro dopt 2.nolist
+	dw	%2
+	db	%1
+%endmacro
+
+Options dopt	'?', Opt?
+	dopt	'C', OptC
+	dopt	'D', DoDriver
+	dopt	'E', OptIgn             ; MSCDEX: expanded memory
+	dopt	'I', OptI
+	dopt	'K', OptIgn             ; MSCDEX: Kanji
+	dopt	'L', DoLetter
+	dopt	'M', OptIgn             ; MSCDEX: buffers
+	dopt	'Q', OptQ
+	dopt	'R', OptR
+	dopt	'S', OptIgn             ; MSCDEX: sharing
+	dopt	'U', OptU
+	dopt	'V', OptV
+	dopt	'~', Opt~
+	dopt	255, OptUnk
+
+UnknownOpt		db  "Unknown option: '"
+OptChar 		dlz		     "?'."
+DInvalid		dlz "/D: invalid drive letter."
+DUnitNumber		dlz "/D: expecting unit number (0-99)."
+DMaxNumber		dlz "/D: expecting maximum units (1-9)."
+LMissingValue		dlz "/L: expecting value."
+LNoD			dlz "/L: must follow /D."
+LInvalid		dlz "/L: invalid drive letter."
+LBadNumber		dlz "/L: only two digits allowed."
+
+
 CritInit:
 	; zero out the sector buffers (security and directory scan sentinel)
 	mov	di, [Drive+DrvEnt.Bufp]
@@ -206,8 +239,8 @@ SilentFlag	dflg	off
 
 
 		align	16
-Res_Begin	equ	$-$$+100h - 192*2
-local_stack	equ	$ - 192*2	; stack goes back into the PSP
+Res_Begin	equ	$-$$+100h - 280*2
+local_stack	equ	$ - 280*2	; stack goes back into the PSP
 throw_sp	equ	$-2
 DriveOfs	dw	0	; EAX, but low word is not needed
 scratch 	dw	0	; used by 8086 code
@@ -2650,37 +2683,7 @@ NotEnoughMemMsg 	dz  ln,"Not enough memory."
 FullStop		equ $-2
 CantInstallMsg		dlz "  SHSUCDX can't install."
 
-UnknownOpt		db  "Unknown option: '"
-OptChar 		dlz		     "?'."
 DDriver 		dlz "/D: driver name required."
-DInvalid		dlz "/D: invalid drive letter."
-DUnitNumber		dlz "/D: expecting unit number (0-99)."
-DMaxNumber		dlz "/D: expecting maximum units (1-9)."
-LMissingValue		dlz "/L: expecting value."
-LNoD			dlz "/L: must follow /D."
-LInvalid		dlz "/L: invalid drive letter."
-LBadNumber		dlz "/L: only two digits allowed."
-
-%macro dopt 2.nolist
-	dw	%2
-	db	%1
-%endmacro
-
-Options dopt	'?', Opt?
-	dopt	'C', OptC
-	dopt	'D', DoDriver
-	dopt	'E', OptIgn             ; MSCDEX: expanded memory
-	dopt	'I', OptI
-	dopt	'K', OptIgn             ; MSCDEX: Kanji
-	dopt	'L', DoLetter
-	dopt	'M', OptIgn             ; MSCDEX: buffers
-	dopt	'Q', OptQ
-	dopt	'R', OptR
-	dopt	'S', OptIgn             ; MSCDEX: sharing
-	dopt	'U', OptU
-	dopt	'V', OptV
-	dopt	'~', Opt~
-	dopt	255, OptUnk
 
 
 struc DrvrEnt

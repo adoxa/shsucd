@@ -296,6 +296,7 @@
     v3.05 - 11 February, 2011:
     - fixed reading an empty directory sector
     * Find First will return "no more files" (18) not "file not found" (2)
+    * increased stack (as per SHCDX33C).
 
     v3.04 - 1 October, 2006:
     - 8086 version trashed memory when the disc was missing
