@@ -6,6 +6,8 @@
 ; jadoxa@yahoo.com.au
 ; http://shsucdx.adoxa.cjb.net/
 ;
+; v1.01, January, 2012.
+;
 ; Create an image of a CD in memory.
 ;
 ;****************************************************************************
@@ -166,7 +168,7 @@ Interrupt
 	sub	al, rhcmdIOCTL_In
 	if e
 	 les	di, [bx+rhIOCTL.CBPtr]
-	 mov	cl, [es:di]		; 1st byte of DTA is subcommand
+	 movzx. cx, [es:di]		; 1st byte of DTA is subcommand
 	 inc	di			; address of buffer
 
 	 jcxz	.RDHACmd
@@ -311,7 +313,7 @@ EndOfRes
 
 CopyrightMsg
 dln "SHSUCDRI by Jason Hood <jadoxa@yahoo.com.au>."
-dln "Version 1.00 (28 May, 2005). Freeware."
+dln "Version 1.01 (24 January, 2012).  Freeware."
 dln "http://shsucdx.adoxa.cjb.net/"
 
 CRLF dlz
