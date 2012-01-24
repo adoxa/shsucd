@@ -1,9 +1,9 @@
 
 				  SHSUCD Image
 
-			   Copyright 2005 Jason Hood
+			 Copyright 2005-2012 Jason Hood
 
-			     Freeware. Version 3-2
+			     Freeware.	Version 3-3
 
 		    Derived from SHSUCDHD v2.0 by John McCoy
 
@@ -150,6 +150,10 @@
     v3.00 - 25 November, 2004:
     * clean slate.
 
+    SHSUCDRI
+    v1.01 - 24 January, 2012:
+    - initialize CH to 0 for processing during Interrupt.
+
 
     ===
     OMI
@@ -230,5 +234,5 @@
     * use country-specific decimal, thousands and time separators
 
 
-    =========================
-    Jason Hood, 31 May, 2005.
+    =============================
+    Jason Hood, 25 January, 2012.

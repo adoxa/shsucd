@@ -1,9 +1,9 @@
 
 				  SHSUCD Suite
 
-			   Copyright Jason Hood 2005
+			 Copyright 2005-2012 Jason Hood
 
-			     Freeware. Version 3-2
+			     Freeware.	Version 3-3
 
 		     Derived from SHSUCD 1.4b by John McCoy
 
@@ -24,13 +24,13 @@
 
     The following programs are included in the suite:
 
-	SHSUCDX  v3.02	Provides access to the CD-ROM as a drive (MSCDEX)
+	SHSUCDX  v3.05	Provides access to the CD-ROM as a drive (MSCDEX)
 	SHSUCDHD v3.01	Simulates a CD-ROM using an image file
 	SHSUCDRD v1.00	Simulates a CD-ROM using an image file in memory
 	SHSUDVHD v1.00	Simulates a DVD-ROM using multiple image files
-	SHSUCDRI v1.00	Creates an image from a CD-ROM in memory
+	SHSUCDRI v1.01	Creates an image from a CD-ROM in memory
 	OMI	 v1.00	Creates an image from a CD-ROM or DVD-ROM
-	ISOBAR	 v1.00	Extracts the boot image from a bootable CD-ROM
+	ISOBAR	 v1.01	Extracts the boot image from a bootable CD-ROM
 	CDTEST		Tests the CD-ROM functions (Int2F/AH=15)
 	SMARTER 	Patches SMARTDrive 5.02 to cache SHSUCDX
 
@@ -233,5 +233,5 @@
     Australia
 
 
-    =========================
-    Jason Hood, 31 May, 2005.
+    =============================
+    Jason Hood, 25 January, 2012.

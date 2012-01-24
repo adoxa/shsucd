@@ -20,17 +20,16 @@ although I've made some improvements).
 URLs:
 
 TCCONIO (the display library):
-http://www.geocities.com/jadoxa/tcconio/
-http://www.geocities.com/SiliconValley/Station/1177/foundry.html
+http://tcconio.adoxa.cjb.net/
 
 SHSUCD:
-http://www.geocities.com/jadoxa/shsucdx/
+http://shsucdx.adoxa.cjb.net/
 
 FileDisk:
 http://www.acc.umu.se/~bosse/
 
 VDK:
-http://chitchat.at.infoseek.co.jp/vmware/
+http://sites.google.com/site/chitchatvmback/vdk
 
 
 Jason Hood, 10 June, 2005.
