@@ -1685,9 +1685,12 @@ dir_ent:
 	shr	ch, 1			; Canonical entry not supported
 .e1:	jc	err1
 	call	SetForUs
-	cmpb	[es:bx], PATHSEPARATOR
+	mov	al, [es:bx]
+	cmp	al, '/'                 ; Need for Speed installer starts with
+	je	.root			;  slash, but the path is all backslash
+	cmp	al, PATHSEPARATOR
 .e2:	jne	Err02			; must be absolute path
-	sub	bx, RootSlashOff	; path adjustment
+.root:	sub	bx, RootSlashOff	; path adjustment
 	call	PathLookup
 	call	FindEntry
 	jnz	.e2			; file not found (NC if found)
@@ -1856,10 +1859,10 @@ Glob
 Match	uses	all
 	call	CDtoFCB
 	repeat	11
-	 ;dec	 si			; dir_name - 1 == file_name + 10
-	 ;mov	 al, [si]
-	 mov   al, [si-1]		; alternative to provide
-	 dec   si			;  alignment at cdxsda/Drive
+	 dec	si			; dir_name - 1 == file_name + 10
+	 mov	al, [si]
+	 ;mov	al, [si-1]		; alternative to provide
+	 ;dec	si			;  alignment at cdxsda/Drive
 	next al ,e, {'?',[si+11]}
 	return
 
