@@ -4,7 +4,7 @@
 ; SHSUDVHD Version 1.00
 ; Jason Hood, March/May 2005.
 ; jadoxa@yahoo.com.au
-; http://shsucdx.adoxa.cjb.net/
+; http://shsucdx.adoxa.vze.com/
 ;
 ; A DVD-specific version of SHSUCDHD. Since DVDs are quite large (exceeding
 ; DOS' 2GiB file limit), the image is split into multiple files. Each file is
@@ -394,7 +394,7 @@ Drive	; overwites the help screen
 CopyrightMsg
 dln "SHSUDVHD by Jason Hood <jadoxa@yahoo.com.au>."
 dln "Version 1.00 (23 May, 2005). Freeware."
-dln "http://shsucdx.adoxa.cjb.net/"
+dln "http://shsucdx.adoxa.vze.com/"
 
 CRLF dlz
 

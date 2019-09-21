@@ -20,10 +20,10 @@ although I've made some improvements).
 URLs:
 
 TCCONIO (the display library):
-http://tcconio.adoxa.cjb.net/
+http://tcconio.adoxa.vze.com/
 
 SHSUCD:
-http://shsucdx.adoxa.cjb.net/
+http://shsucdx.adoxa.vze.com/
 
 FileDisk:
 http://www.acc.umu.se/~bosse/

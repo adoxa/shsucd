@@ -88,7 +88,7 @@ void usage( void )
 
 "ISOBAR by Jason Hood <jadoxa@yahoo.com.au>.\n"
 "Version "PVERS" ("PDATE"). Freeware.\n"
-"http://shsucdx.adoxa.cjb.net/\n"
+"http://shsucdx.adoxa.vze.com/\n"
 "\n"
 "Extract the boot image (or code) from a bootable CD-ROM or .ISO image.\n"
 "\n"

@@ -4,7 +4,7 @@
 ; SHSUCDRI Version 1.00
 ; Jason Hood, March/May 2005.
 ; jadoxa@yahoo.com.au
-; http://shsucdx.adoxa.cjb.net/
+; http://shsucdx.adoxa.vze.com/
 ;
 ; v1.01, January, 2012.
 ;
@@ -314,7 +314,7 @@ EndOfRes
 CopyrightMsg
 dln "SHSUCDRI by Jason Hood <jadoxa@yahoo.com.au>."
 dln "Version 1.01 (24 January, 2012).  Freeware."
-dln "http://shsucdx.adoxa.cjb.net/"
+dln "http://shsucdx.adoxa.vze.com/"
 
 CRLF dlz
 

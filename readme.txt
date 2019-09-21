@@ -224,7 +224,7 @@
 
     mailto:jadoxa@yahoo.com.au
     mailto:shsucd@yahoogroups.com
-    http://shsucdx.adoxa.cjb.net/
+    http://shsucdx.adoxa.vze.com/
 
     Jason Hood
     11 Buckle Street

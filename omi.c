@@ -159,7 +159,7 @@ int main( int argc, char** argv )
       puts(
   "Optical Media Image by Jason Hood <jadoxa@yahoo.com.au>.\n"
   "Version "PVERS" ("PDATE"). Freeware.\n"
-  "http://shsucdx.adoxa.cjb.net/\n"
+  "http://shsucdx.adoxa.vze.com/\n"
   "\n"
   "Create an image of a CD- or DVD-ROM.\n"
   "\n"

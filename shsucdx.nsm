@@ -3,7 +3,7 @@
 ; SHSUCDX Version 3.00
 ; Jason Hood, September to November, 2004.
 ; jadoxa@yahoo.com.au
-; http://shsucdx.adoxa.cjb.net/
+; http://shsucdx.adoxa.vze.com/
 ;
 ; v3.01, March, 2005.
 ; v3.02, April/May, 2005.
@@ -170,7 +170,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
 dln "Version 3.05 (11 February, 2011).  Freeware. | John H. McCoy, October 2000,"
-dlz "http://shsucdx.adoxa.cjb.net/                | Sam Houston State University."
+dlz "http://shsucdx.adoxa.vze.com/                | Sam Houston State University."
 		db	26
 
 ; Put the options here, to make room for the stack.

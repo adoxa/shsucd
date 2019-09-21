@@ -4,7 +4,7 @@
 ; SHSUCDRD Version 1.00
 ; Jason Hood, March to May 2005.
 ; jadoxa@yahoo.com.au
-; http://shsucdx.adoxa.cjb.net/
+; http://shsucdx.adoxa.vze.com/
 ;
 ; A RAM (XMS) version of SHSUCDHD, supporting gzipped images.
 ;
@@ -335,7 +335,7 @@ Drive	; overwites the help screen
 CopyrightMsg
 dln "SHSUCDRD by Jason Hood <jadoxa@yahoo.com.au>."
 dln "Version 1.00 (28 May, 2005). Freeware."
-dln "http://shsucdx.adoxa.cjb.net/"
+dln "http://shsucdx.adoxa.vze.com/"
 
 CRLF dlz
 
