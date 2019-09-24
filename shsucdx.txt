@@ -1,9 +1,9 @@
 
 				    SHSUCDX
 
-			 Copyright 2006-2011 Jason Hood
+			 Copyright 2006-2019 Jason Hood
 
-			    Freeware.  Version 3.05
+			    Freeware.  Version 3.06
 
 			Derived from v1.4b by John McCoy
 
@@ -293,6 +293,10 @@
 
     Legend: + added, - bug-fixed, * changed.
 
+    v3.06 - 20 September, 2019:
+    - allow Get Directory Entry path to start with slash (needed by "The Need
+      for Speed" installer)
+
     v3.05 - 11 February, 2011:
     - fixed reading an empty directory sector
     * Find First will return "no more files" (18) not "file not found" (2)
@@ -331,5 +335,5 @@
     * clean slate.
 
 
-    ==============================
-    Jason Hood, 11 February, 2011.
+    ===============================
+    Jason Hood, 20 September, 2019.

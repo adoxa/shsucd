@@ -1,9 +1,9 @@
 
 				  SHSUCD Suite
 
-			 Copyright 2005-2012 Jason Hood
+			 Copyright 2005-2019 Jason Hood
 
-			     Freeware.	Version 3-3
+			     Freeware.	Version 3-4
 
 		     Derived from SHSUCD 1.4b by John McCoy
 
@@ -24,7 +24,7 @@
 
     The following programs are included in the suite:
 
-	SHSUCDX  v3.05	Provides access to the CD-ROM as a drive (MSCDEX)
+	SHSUCDX  v3.06	Provides access to the CD-ROM as a drive (MSCDEX)
 	SHSUCDHD v3.01	Simulates a CD-ROM using an image file
 	SHSUCDRD v1.00	Simulates a CD-ROM using an image file in memory
 	SHSUDVHD v1.00	Simulates a DVD-ROM using multiple image files
@@ -163,10 +163,11 @@
     I have used NASM 0.98.39 and Borland C++ 3.1.  Due to my  heavy  use  of
     the  NASM  preprocessor, a 32-bit version is required, with about 6MB of
     free memory (to avoid paging).  I think version .36 may compile, but not
-    before  that.   Users  of  other  C  compilers should be able to compile
-    SMARTER.C, but the other C programs may need  modifications  (I've  used
-    REGPACK  and intr, which seems Borland-specific, so you'll have to split
-    REGPACK into REGS and SREGS and use int86x).  Please see the MAKEFILE.
+    before  that;  series  2 will also not work (at least up until 2.15rc0).
+    Users of other C compilers should be  able	to  compile  SMARTER.C,  but
+    the other C programs may need modifications (I've used REGPACK and intr,
+    which seems Borland-specific, so you'll have to split REGPACK into  REGS
+    and SREGS and use int86x).	Please see the MAKEFILE.
 
     There's no need to tell me about UPX, but feel free to use it yourself.
 
@@ -233,5 +234,5 @@
     Australia
 
 
-    =============================
-    Jason Hood, 25 January, 2012.
+    ===============================
+    Jason Hood, 24 September, 2019.
