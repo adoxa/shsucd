@@ -1,9 +1,9 @@
 
 				    SHSUCDX
 
-			 Copyright 2006-2019 Jason Hood
+			 Copyright 2006-2020 Jason Hood
 
-			    Freeware.  Version 3.06
+			    Freeware.  Version 3.07
 
 			Derived from v1.4b by John McCoy
 
@@ -293,6 +293,9 @@
 
     Legend: + added, - bug-fixed, * changed.
 
+    v3.07 - 8 April, 2020:
+    - fixed the first drive number after only installing with reserved drives
+
     v3.06 - 20 September, 2019:
     - allow Get Directory Entry path to start with slash (needed by "The Need
       for Speed" installer)
@@ -335,5 +338,5 @@
     * clean slate.
 
 
-    ===============================
-    Jason Hood, 20 September, 2019.
+    ==========================
+    Jason Hood, 8 April, 2020.

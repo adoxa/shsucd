@@ -11,6 +11,7 @@
 ; v3.04, October, 2006.
 ; v3.05, February, 2011.
 ; v3.06, September, 2019.
+; v3.07, April, 2020.
 ;
 ;*** Begin original comments (abridged):
 ;***************************************************************************
@@ -138,7 +139,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 %define RC_OK		0		; help, tilde/ro, successful uninstall
 					; 1..32 first drive number (A=1)
 
-%assign COMPILE_FLAG hl(6,0)
+%assign COMPILE_FLAG hl(7,0)
 %ifdef i8086
   %assign COMPILE_FLAG COMPILE_FLAG | bit(0)
 %endif
@@ -170,7 +171,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.06 (20 September, 2019). Freeware. | John H. McCoy, October 2000,"
+dln "Version 3.07 (8 April, 2020). Freeware.      | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.vze.com/                | Sam Houston State University."
 		db	26
 
