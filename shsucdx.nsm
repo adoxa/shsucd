@@ -3408,6 +3408,7 @@ CopyDrives
 	mov	al, DrvEnt_size
 	mulb	[es:NoDrives]
 	mov	si, Drive
+	if. z,	mmov cl, [es:FirstDriveNo], [si+DrvEnt.No]
 	mov	di, si
 	add	di, ax
 	repeatb [NoDrives]
