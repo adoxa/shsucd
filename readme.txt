@@ -224,14 +224,8 @@
     =======
 
     mailto:jadoxa@yahoo.com.au
-    mailto:shsucd@yahoogroups.com
     http://shsucdx.adoxa.vze.com/
 
-    Jason Hood
-    11 Buckle Street
-    North Rockhampton
-    Qld 4701
-    Australia
 
 
     ==========================
