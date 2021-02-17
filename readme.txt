@@ -1,9 +1,9 @@
 
 				  SHSUCD Suite
 
-			 Copyright 2005-2020 Jason Hood
+			 Copyright 2005-2021 Jason Hood
 
-			     Freeware.	Version 3-5
+			     Freeware.	Version 3-6
 
 		     Derived from SHSUCD 1.4b by John McCoy
 
@@ -24,7 +24,7 @@
 
     The following programs are included in the suite:
 
-	SHSUCDX  v3.07	Provides access to the CD-ROM as a drive (MSCDEX)
+	SHSUCDX  v3.08	Provides access to the CD-ROM as a drive (MSCDEX)
 	SHSUCDHD v3.01	Simulates a CD-ROM using an image file
 	SHSUCDRD v1.00	Simulates a CD-ROM using an image file in memory
 	SHSUDVHD v1.00	Simulates a DVD-ROM using multiple image files
@@ -227,6 +227,5 @@
     http://shsucdx.adoxa.vze.com/
 
 
-
-    ==========================
-    Jason Hood, 8 April, 2020.
+    ==============================
+    Jason Hood, 17 February, 2021.

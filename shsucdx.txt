@@ -1,9 +1,9 @@
 
 				    SHSUCDX
 
-			 Copyright 2006-2020 Jason Hood
+			 Copyright 2006-2021 Jason Hood
 
-			    Freeware.  Version 3.07
+			    Freeware.  Version 3.08
 
 			Derived from v1.4b by John McCoy
 
@@ -293,6 +293,9 @@
 
     Legend: + added, - bug-fixed, * changed.
 
+    v3.08 - 17 February, 2021:
+    - allow /L before /D (FM TOWNS compatibility)
+
     v3.07 - 8 April, 2020:
     - fixed the first drive number after only installing with reserved drives
 
@@ -338,5 +341,5 @@
     * clean slate.
 
 
-    ==========================
-    Jason Hood, 8 April, 2020.
+    ==============================
+    Jason Hood, 17 February, 2021.
