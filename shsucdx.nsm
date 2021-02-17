@@ -203,7 +203,6 @@ DInvalid		dlz "/D: invalid drive letter."
 DUnitNumber		dlz "/D: expecting unit number (0-99)."
 DMaxNumber		dlz "/D: expecting maximum units (1-9)."
 LMissingValue		dlz "/L: expecting value."
-LNoD			dlz "/L: must follow /D."
 LInvalid		dlz "/L: invalid drive letter."
 LBadNumber		dlz "/L: only two digits allowed."
 
@@ -3975,18 +3974,13 @@ DoLetter
 	 ret
 	fi
 	mov	di, [DriverIndex]
-	if di ,e, Drivers
-	 mov	si, LNoD		; Haven't seen /D
-	 stc
-	 ret
-	fi
 	lodsb
 	cbit	al, 5
 	sub	al, 'A'
 	if al ,b, 32
-	 sub	di, DrvrEnt_size - DrvrEnt.Drive
-	 stosb
-	 ;clc
+	 if. {di ,ne, Drivers}, sub di, DrvrEnt_size
+	 mov	[di+DrvrEnt.Drive], al
+	 clc
 	 ret
 	fi
 	mov	si, LInvalid		; Not a valid drive

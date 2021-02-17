@@ -80,7 +80,7 @@
     /L - Letter
 
     This option is an alternative to the LETTER component of /D, which it
-    must follow (ie: /D:driver /L:letter).  It can also be used to return
+    should follow (ie: /D:driver /L:letter).  It can also be used to return
     the number of drives installed (/L:0, will return 255 if not installed)
     and the letter of each assigned drive (/L:1, /L:2, etc., with A: = 1 and
     255 if the drive is not assigned).
