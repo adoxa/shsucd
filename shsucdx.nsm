@@ -13,6 +13,7 @@
 ; v3.06, September, 2019.
 ; v3.07, April, 2020.
 ; v3.08, February, 2021.
+; v3.09, September, 2022.
 ;
 ;*** Begin original comments (abridged):
 ;***************************************************************************
@@ -172,7 +173,7 @@ NoRedir 	equ	0ffh		; equate required for table terminator
 		db	13		; overwrite JMP if TYPEd
 CopyrightMsg
 dln "SHSUCDX by Jason Hood <jadoxa@yahoo.com.au>. | Derived from v1.4b by"
-dln "Version 3.08 (17 February, 2021). Freeware.  | John H. McCoy, October 2000,"
+dln "Version 3.09 (2 September, 2022). Freeware.  | John H. McCoy, October 2000,"
 dlz "http://shsucdx.adoxa.vze.com/                | Sam Houston State University."
 		db	26
 

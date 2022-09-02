@@ -1,9 +1,9 @@
 
 				    SHSUCDX
 
-			 Copyright 2006-2021 Jason Hood
+			 Copyright 2006-2022 Jason Hood
 
-			    Freeware.  Version 3.08
+			    Freeware.  Version 3.09
 
 			Derived from v1.4b by John McCoy
 
@@ -293,6 +293,10 @@
 
     Legend: + added, - bug-fixed, * changed.
 
+    v3.09 - 2 September, 2022:
+    - ignore Associated Files (needed for "Warcraft II: Beyond the Dark Portal
+      Expansion Set", probably other Macintosh discs)
+
     v3.08 - 17 February, 2021:
     - allow /L before /D (FM TOWNS compatibility)
 
@@ -306,7 +310,7 @@
     v3.05 - 11 February, 2011:
     - fixed reading an empty directory sector
     * Find First will return "no more files" (18) not "file not found" (2)
-    * increased stack (as per SHCDX33C).
+    * increased stack (as per SHCDX33C)
 
     v3.04 - 1 October, 2006:
     - 8086 version trashed memory when the disc was missing
@@ -342,4 +346,4 @@
 
 
     ==============================
-    Jason Hood, 17 February, 2021.
+    Jason Hood, 2 September, 2022.
