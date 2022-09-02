@@ -2366,6 +2366,9 @@ FindEntry
 FindName
 	uses	es
 	ld	es, ds
+%ifdef HS
+	mmov	cl, [.flag+2], [bx+DrvEnt.Type]
+%endif
 	mov	bx, [bx+DrvEnt.Bufp]
 	repeatr di, ns
 	 call	CdReadBlk			; returns CH = 0
@@ -2375,6 +2378,7 @@ FindName
 	 mov	dx, [BP_(scratch)]
 %endif
 	 for0	si, bx, {[si] ,ne, ch}, cx	; {[si] nzb}
+.flag:	 cntnub [si+isoDir.Flags] ,&, ASSOCFILE
 	  call	Match
 Matchfunc iw
 %ifdef i8086
